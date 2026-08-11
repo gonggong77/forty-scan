@@ -5,7 +5,7 @@
 # forty_scan_현경_모델생성.py 로 저장한 모델(model/forty_scan_현경_model.pkl)을
 # 불러와 문장을 입력받아 영포티 지수를 판독합니다.
 #
-# 특징추출(정규식 사전 + 오타 보정)은 forty_scan_현경_features.py 를
+# 특징추출(정규식 사전 + 오타 보정)은 forty_scan_features.py 를
 # import 해서 씁니다. (모델 생성 스크립트와 동일한 전처리를 공유하기 위함)
 #
 # 기능:
