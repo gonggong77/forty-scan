@@ -187,6 +187,12 @@
 
   .chip .fz { opacity: .65; font-size: 11px; }
 
+  .chip.neu {
+    color: var(--text);
+    border-color: var(--line);
+    background: var(--panel-2);
+  }
+
   /* ---------- 대표 문장 ---------- */
 
   details { margin-top: 14px; }
@@ -224,6 +230,80 @@
   }
 
   footer a { color: var(--muted); }
+
+  /* ---------- 구분선 ---------- */
+
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 32px 0;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .divider::before,
+  .divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+  }
+
+  /* ---------- 문장 하나 판독 ---------- */
+
+  #quick .section-label { margin-top: 0; }
+
+  #sentenceInput {
+    width: 100%;
+    min-height: 76px;
+    resize: vertical;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 14px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  #sentenceInput:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  #sentenceBtn {
+    margin-top: 10px;
+    padding: 10px 18px;
+    border: none;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #0f1115;
+    font-weight: 700;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  #sentenceBtn:disabled {
+    opacity: .5;
+    cursor: default;
+  }
+
+  #sentenceStatus {
+    margin-top: 10px;
+    font-size: 13px;
+    color: var(--muted);
+    min-height: 18px;
+  }
+
+  #sentenceStatus.error {
+    color: #ffa8a8;
+    background: rgba(255, 107, 107, .08);
+    border: 1px solid rgba(255, 107, 107, .25);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
 </style>
 </head>
 <body>
@@ -246,6 +326,18 @@
 
   <div id="summary"></div>
   <div id="results"></div>
+
+  <div class="divider">또는</div>
+
+  <div id="quick">
+    <div class="section-label">문장 하나만 빠르게 판독하기</div>
+    <textarea id="sentenceInput" placeholder="문장을 입력하세요… 예) 야 이거 레알 오지구요 지리구요"></textarea>
+    <div>
+      <button id="sentenceBtn">판독하기</button>
+    </div>
+    <div id="sentenceStatus"></div>
+    <div id="sentenceResult"></div>
+  </div>
 
   <footer>
     분석에 쓰인 문장별 점수의 산술평균이 최종 영포티 지수입니다 ·
@@ -507,6 +599,147 @@ function card(r, rank) {
     });
 
     el.appendChild(details);
+  }
+
+  return el;
+}
+
+/* ---------------- 문장 하나 판독 ---------------- */
+
+const sentenceInput  = document.getElementById("sentenceInput");
+const sentenceBtn    = document.getElementById("sentenceBtn");
+const sentenceStatus = document.getElementById("sentenceStatus");
+const sentenceResult = document.getElementById("sentenceResult");
+
+let sentenceBusy = false;
+
+sentenceBtn.addEventListener("click", sendSentence);
+
+/* Enter 로 바로 판독, Shift+Enter 는 줄바꿈 */
+sentenceInput.addEventListener("keydown", function (e) {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendSentence();
+  }
+});
+
+async function sendSentence() {
+  if (sentenceBusy) return;
+
+  const text = sentenceInput.value.trim();
+
+  sentenceStatus.className = "";
+
+  if (!text) {
+    sentenceStatus.className   = "error";
+    sentenceStatus.textContent = "문장을 입력해 주세요.";
+    return;
+  }
+
+  sentenceBusy = true;
+  sentenceBtn.disabled = true;
+  sentenceResult.innerHTML = "";
+  sentenceStatus.textContent = "판독 중입니다…";
+
+  try {
+    const res = await fetch("/analyze-sentence", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text })
+    });
+
+    let data = null;
+    try { data = await res.json(); } catch (_) { data = null; }
+
+    if (!res.ok) {
+      sentenceStatus.className   = "error";
+      sentenceStatus.textContent = readDetail(data, res.status);
+      return;
+    }
+
+    sentenceStatus.textContent = "";
+    sentenceResult.appendChild(sentenceCard(data));
+
+  } catch (err) {
+    sentenceStatus.className   = "error";
+    sentenceStatus.textContent = "서버에 연결하지 못했습니다. (" + err.message + ")";
+  } finally {
+    sentenceBusy = false;
+    sentenceBtn.disabled = false;
+  }
+}
+
+/* /analyze-sentence 응답 형태 (analyze_sentence() 그대로):
+   { text, score, grade, grade_comment, detected_features, vector } */
+
+function sentenceCard(r) {
+  const color = gradeColor(r.score);
+
+  const el = document.createElement("div");
+  el.className = "card";
+
+  const top = document.createElement("div");
+  top.className = "card-top";
+
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.style.background = color;
+  badge.textContent = r.grade;
+
+  const scoreEl = document.createElement("span");
+  scoreEl.className = "score";
+  scoreEl.style.color = color;
+  scoreEl.textContent = r.score.toFixed(1);
+
+  top.append(badge, scoreEl);
+  el.appendChild(top);
+
+  const comment = document.createElement("div");
+  comment.className = "comment";
+  comment.textContent = r.grade_comment;
+  el.appendChild(comment);
+
+  const bar = document.createElement("div");
+  bar.className = "bar";
+
+  const fill = document.createElement("i");
+  fill.style.width = Math.max(0, Math.min(100, r.score)) + "%";
+  fill.style.background = color;
+
+  bar.appendChild(fill);
+  el.appendChild(bar);
+
+  if (r.detected_features.length) {
+    const label = document.createElement("div");
+    label.className = "section-label";
+    label.textContent = "검출된 특징";
+    el.appendChild(label);
+
+    const chips = document.createElement("div");
+    chips.className = "chips";
+
+    r.detected_features.forEach(function (f) {
+      const chip = document.createElement("span");
+      chip.className = "chip neu";
+      chip.textContent = f.name + " ×" + f.count;
+
+      if (f.is_fuzzy) {
+        const fz = document.createElement("span");
+        fz.className = "fz";
+        fz.textContent = " (오타보정)";
+        chip.appendChild(fz);
+      }
+
+      chips.appendChild(chip);
+    });
+
+    el.appendChild(chips);
+  } else {
+    const none = document.createElement("div");
+    none.className = "meta";
+    none.style.marginTop = "12px";
+    none.textContent = "사전에 등록된 특징이 검출되지 않았습니다.";
+    el.appendChild(none);
   }
 
   return el;

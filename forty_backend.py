@@ -1,4 +1,3 @@
-
 # ==========================================================
 # forty-scan
 # 영포티 말투 판독기 - FastAPI 백엔드
@@ -41,6 +40,7 @@ import numpy as np
 
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from forty_scan_features import (
     FEATURE_NAMES,
@@ -435,6 +435,17 @@ def analyze_conversation(
 
 
 # ==========================================================
+# 9-1. 문장 판독 요청 바디
+#
+# forty_scan_test.py 의 대화형 입력(문장 1개)을
+# API로 그대로 옮기기 위한 요청 스키마입니다.
+# ==========================================================
+
+class SentenceRequest(BaseModel):
+    text: str
+
+
+# ==========================================================
 # 10. 서버 상태 확인
 # ==========================================================
 
@@ -590,6 +601,45 @@ async def analyze(
         # 문장별 상세 결과
         "sentence_results": result["sentence_results"]
     }
+
+
+# ==========================================================
+# 13. 문장 하나 판독 API
+#
+# forty_scan_test.py 의 대화형 판독 기능을 그대로 옮긴 API입니다.
+# TXT 업로드 없이, 문장 하나만 보내면 바로 판독 결과를 돌려줍니다.
+#
+# 요청 (JSON):
+#
+#     { "text": "야 이거 레알 오지구요 지리구요" }
+#
+# 반환:
+#
+#     analyze_sentence() 의 결과와 동일
+#     (score, grade, grade_comment, detected_features, vector)
+# ==========================================================
+
+@app.post("/analyze-sentence")
+def analyze_single_sentence(
+    request: SentenceRequest
+):
+
+    text = request.text.strip()
+
+    if not text:
+
+        raise HTTPException(
+            status_code=400,
+            detail="분석할 문장이 없습니다."
+        )
+
+    # 8번 섹션에 이미 정의된 함수를 그대로 재사용합니다.
+    # /analyze 가 문장마다 호출하는 것과 완전히 같은 로직입니다.
+    result = analyze_sentence(
+        text
+    )
+
+    return result
 
 
 # ==========================================================
