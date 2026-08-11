@@ -8,16 +8,23 @@
 # 2. TXT에서 화자 자동 추출
 # 3. 사용자가 선택한 화자의 메시지만 분석
 # 4. 메시지 1개 = 1개 샘플
-# 5. 기존 28개 특징 Multi-hot 변환
+# 5. Multi-hot 변환 (오타 보정 포함)
 # 6. 저장된 Logistic Regression 모델로 판독
 # 7. 문장별 영포티 지수 계산
 # 8. 문장별 영포티 지수의 평균 = 최종 영포티 지수
 #
+# 특징추출(정규식 사전 + 오타 보정)과 등급 기준은
+# forty_scan_features.py 를 import 해서 씁니다.
+# 학습(forty_scan_model.py) / CLI 판독(forty_scan_test.py) 과
+# 완전히 동일한 전처리를 써야 점수가 어긋나지 않습니다.
+#
 # 실행:
-#   uvicorn main:app --reload
+#   python forty_backend.py
+#   또는
+#   uvicorn forty_backend:app --reload
 #
 # 필요 패키지:
-#   pip install fastapi uvicorn python-multipart joblib numpy scikit-learn
+#   pip install -r requirements.txt
 #
 # ==========================================================
 
@@ -35,22 +42,16 @@ import numpy as np
 from fastapi import FastAPI, File, Form, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-
-# ==========================================================
-# 1. 기본 설정
-# ==========================================================
-
-# ==========================================================
-# 1. 기본 설정
-# ==========================================================
-
-MODEL_PATH = os.path.join(
-    "model",
-    "forty_scan_현경_model.pkl"
+from forty_scan_features import (
+    FEATURE_NAMES,
+    MODEL_PATH,
+    get_grade,
+    text_to_multihot,
 )
 
+
 # ==========================================================
-# 2. FastAPI 앱 생성
+# 1. FastAPI 앱 생성
 # ==========================================================
 
 app = FastAPI(
@@ -61,7 +62,7 @@ app = FastAPI(
 
 
 # ==========================================================
-# 3. CORS 설정
+# 2. CORS 설정
 #
 # 프론트엔드와 백엔드의 주소가 다를 경우 필요합니다.
 #
@@ -79,7 +80,7 @@ app.add_middleware(
 
 
 # ==========================================================
-# 4. 모델 로드
+# 3. 모델 로드
 #
 # 서버가 시작될 때 한 번만 모델을 불러옵니다.
 #
@@ -90,81 +91,26 @@ if not os.path.exists(MODEL_PATH):
 
     raise FileNotFoundError(
         f"\n모델 파일을 찾을 수 없습니다.\n"
-        f"모델 경로:\n{MODEL_PATH}\n"
+        f"모델 경로:\n{MODEL_PATH}\n\n"
+        f"forty_scan_model.py 를 먼저 실행해서 모델을 생성하세요.\n"
     )
 
 
-MODEL_DATA = joblib.load(MODEL_PATH)
+MODEL = joblib.load(MODEL_PATH)["model"]
 
-MODEL = MODEL_DATA["model"]
-FEATURES = MODEL_DATA["features"]
+# 모델을 다시 학습하지 않은 채 특징 사전만 바꾸면
+# 계수가 엉뚱한 차원에 곱해집니다. 시작할 때 바로 잡습니다.
+if MODEL.coef_.shape[1] != len(FEATURE_NAMES):
 
-FEATURE_NAMES = [
-    name
-    for name, _ in FEATURES
-]
-
-COMPILED_PATTERNS = [
-    re.compile(pattern)
-    for _, pattern in FEATURES
-]
-
-
-# ==========================================================
-# 5. 등급 기준
-# ==========================================================
-
-GRADES = [
-    (
-        20,
-        "진성 MZ",
-        "영포티 특징이 거의 없습니다."
-    ),
-    (
-        40,
-        "정상 범주",
-        "무난한 말투입니다."
-    ),
-    (
-        60,
-        "영포티 경계",
-        "슬슬 물결(~)과 마침표를 조심하세요."
-    ),
-    (
-        80,
-        "MZ 코스프레 40대",
-        "젊은 척이 살짝 티납니다."
-    ),
-    (
-        101,
-        "확진 영포티",
-        "라떼 향이 진하게 감지되었습니다."
+    raise RuntimeError(
+        f"\n모델과 특징 사전의 차원이 다릅니다.\n"
+        f"모델: {MODEL.coef_.shape[1]}차원 / 특징 사전: {len(FEATURE_NAMES)}차원\n\n"
+        f"forty_scan_model.py 를 다시 실행해서 모델을 새로 만드세요.\n"
     )
-]
-
-
-def get_grade(score):
-    """
-    영포티 지수(0~100)를 5단계 등급으로 변환합니다.
-    """
-
-    for upper, name, comment in GRADES:
-
-        if score < upper:
-
-            return {
-                "name": name,
-                "comment": comment
-            }
-
-    return {
-        "name": GRADES[-1][1],
-        "comment": GRADES[-1][2]
-    }
 
 
 # ==========================================================
-# 6. TXT 디코딩
+# 4. TXT 디코딩
 # ==========================================================
 
 def decode_txt(file_bytes):
@@ -197,7 +143,7 @@ def decode_txt(file_bytes):
 
 
 # ==========================================================
-# 7. 카카오톡 TXT 파싱
+# 5. 카카오톡 TXT 파싱
 # ==========================================================
 
 def parse_kakao_txt(text):
@@ -268,7 +214,7 @@ def parse_kakao_txt(text):
 
 
 # ==========================================================
-# 8. 화자 목록 추출
+# 6. 화자 목록 추출
 # ==========================================================
 
 def get_speakers(messages):
@@ -293,74 +239,58 @@ def get_speakers(messages):
 
 
 # ==========================================================
-# 9. Multi-hot 변환
+# 7. 업로드 파일 → 메시지 목록
+#
+# /speakers 와 /analyze 가 똑같이 거치는 앞단 과정입니다.
+# 두 곳에 같은 코드를 두면 검증 규칙이 갈라지므로 한 곳으로 모읍니다.
 # ==========================================================
 
-def text_to_multihot(text):
+async def load_messages(file):
     """
-    문장 하나를 28차원 Multi-hot 벡터로 변환합니다.
+    업로드 파일을 검증하고 카카오톡 메시지 목록으로 만듭니다.
 
-    주의:
-    단순 0/1이 아니라
-    특징의 등장 횟수를 그대로 사용합니다.
-
-    예:
-
-    "ㅋㅋㅋㅋ 라떼는 말이야!!"
-
-    각 특징의 검출 횟수가
-    [0, 0, 1, 2, ...]
-    형태로 들어갑니다.
+    확장자 확인 → 읽기 → 인코딩 판별 → 파싱 → 빈 결과 확인
     """
 
-    if text is None:
+    # filename은 None일 수 있으므로 그대로 .lower()를 부르지 않습니다.
+    filename = file.filename or ""
 
-        text = ""
+    if not filename.lower().endswith(".txt"):
 
-    text = str(text)
-
-    vector = []
-
-    for pattern in COMPILED_PATTERNS:
-
-        count = len(
-            pattern.findall(text)
+        raise HTTPException(
+            status_code=400,
+            detail="카카오톡 TXT 파일만 업로드할 수 있습니다."
         )
 
-        vector.append(
-            count
+    file_bytes = await file.read()
+
+    if not file_bytes:
+
+        raise HTTPException(
+            status_code=400,
+            detail="빈 파일입니다."
         )
 
-    return np.array(
-        vector,
-        dtype=float
+    text = decode_txt(
+        file_bytes
     )
 
-
-# ==========================================================
-# 10. 여러 문장 Multi-hot 변환
-# ==========================================================
-
-def transform_texts(texts):
-    """
-    여러 문장을 한꺼번에 벡터화합니다.
-
-    반환 형태:
-
-    (문장 개수, 28)
-    """
-
-    return np.array(
-        [
-            text_to_multihot(text)
-            for text in texts
-        ],
-        dtype=float
+    messages = parse_kakao_txt(
+        text
     )
 
+    if not messages:
+
+        raise HTTPException(
+            status_code=400,
+            detail="카카오톡 메시지를 찾을 수 없습니다."
+        )
+
+    return messages
+
 
 # ==========================================================
-# 11. 문장 하나 분석
+# 8. 문장 하나 분석
 # ==========================================================
 
 def analyze_sentence(text):
@@ -375,8 +305,11 @@ def analyze_sentence(text):
     vector
     """
 
-    vector = text_to_multihot(
-        text
+    # 학습 때와 동일한 전처리(정규식 + 오타 보정)를 씁니다.
+    # fuzzy_flags = 정규식은 놓쳤는데 오타 보정이 잡아낸 특징 이름들
+    vector, fuzzy_flags = text_to_multihot(
+        text,
+        return_fuzzy_flags=True
     )
 
     # Logistic Regression
@@ -389,7 +322,7 @@ def analyze_sentence(text):
         probability * 100
     )
 
-    grade = get_grade(
+    grade, comment = get_grade(
         score
     )
 
@@ -406,22 +339,23 @@ def analyze_sentence(text):
             detected_features.append(
                 {
                     "name": name,
-                    "count": int(count)
+                    "count": int(count),
+                    "is_fuzzy": name in fuzzy_flags
                 }
             )
 
     return {
         "text": text,
         "score": round(score, 2),
-        "grade": grade["name"],
-        "grade_comment": grade["comment"],
+        "grade": grade,
+        "grade_comment": comment,
         "detected_features": detected_features,
         "vector": vector.astype(int).tolist()
     }
 
 
 # ==========================================================
-# 12. 최종 대화 분석
+# 9. 최종 대화 분석
 # ==========================================================
 
 def analyze_conversation(
@@ -482,7 +416,7 @@ def analyze_conversation(
         np.mean(sentence_scores)
     )
 
-    final_grade = get_grade(
+    final_grade, final_comment = get_grade(
         final_score
     )
 
@@ -491,8 +425,8 @@ def analyze_conversation(
             final_score,
             2
         ),
-        "final_grade": final_grade["name"],
-        "final_comment": final_grade["comment"],
+        "final_grade": final_grade,
+        "final_comment": final_comment,
         "message_count": len(
             selected_messages
         ),
@@ -501,7 +435,7 @@ def analyze_conversation(
 
 
 # ==========================================================
-# 13. 서버 상태 확인
+# 10. 서버 상태 확인
 # ==========================================================
 
 @app.get("/")
@@ -515,7 +449,7 @@ def root():
 
 
 # ==========================================================
-# 14. 화자 목록 확인 API
+# 11. 화자 목록 확인 API
 # ==========================================================
 
 @app.post("/speakers")
@@ -537,54 +471,9 @@ async def get_speaker_list(
     사용자에게 선택하게 만들면 됩니다.
     """
 
-    # ------------------------------------------------------
-    # TXT 확장자 확인
-    # ------------------------------------------------------
-
-    if not file.filename.lower().endswith(
-        ".txt"
-    ):
-
-        raise HTTPException(
-            status_code=400,
-            detail="카카오톡 TXT 파일만 업로드할 수 있습니다."
-        )
-
-    # ------------------------------------------------------
-    # 파일 읽기
-    # ------------------------------------------------------
-
-    file_bytes = await file.read()
-
-    if not file_bytes:
-
-        raise HTTPException(
-            status_code=400,
-            detail="빈 파일입니다."
-        )
-
-    text = decode_txt(
-        file_bytes
+    messages = await load_messages(
+        file
     )
-
-    # ------------------------------------------------------
-    # 카카오톡 파싱
-    # ------------------------------------------------------
-
-    messages = parse_kakao_txt(
-        text
-    )
-
-    if not messages:
-
-        raise HTTPException(
-            status_code=400,
-            detail="카카오톡 메시지를 찾을 수 없습니다."
-        )
-
-    # ------------------------------------------------------
-    # 화자 추출
-    # ------------------------------------------------------
 
     speakers = get_speakers(
         messages
@@ -598,7 +487,7 @@ async def get_speaker_list(
 
 
 # ==========================================================
-# 15. 실제 분석 API
+# 12. 실제 분석 API
 # ==========================================================
 
 @app.post("/analyze")
@@ -624,52 +513,15 @@ async def analyze(
     """
 
     # ------------------------------------------------------
-    # 1. 파일 확장자 확인
+    # 1. 업로드 파일 → 카카오톡 메시지 목록
     # ------------------------------------------------------
 
-    if not file.filename.lower().endswith(
-        ".txt"
-    ):
-
-        raise HTTPException(
-            status_code=400,
-            detail="카카오톡 TXT 파일만 업로드할 수 있습니다."
-        )
-
-    # ------------------------------------------------------
-    # 2. 파일 읽기
-    # ------------------------------------------------------
-
-    file_bytes = await file.read()
-
-    if not file_bytes:
-
-        raise HTTPException(
-            status_code=400,
-            detail="빈 파일입니다."
-        )
-
-    text = decode_txt(
-        file_bytes
+    messages = await load_messages(
+        file
     )
 
     # ------------------------------------------------------
-    # 3. 카카오톡 메시지 파싱
-    # ------------------------------------------------------
-
-    messages = parse_kakao_txt(
-        text
-    )
-
-    if not messages:
-
-        raise HTTPException(
-            status_code=400,
-            detail="카카오톡 메시지를 찾을 수 없습니다."
-        )
-
-    # ------------------------------------------------------
-    # 4. 화자 목록 확인
+    # 2. 화자 목록 확인
     # ------------------------------------------------------
 
     speakers = get_speakers(
@@ -677,7 +529,7 @@ async def analyze(
     )
 
     # ------------------------------------------------------
-    # 5. 존재하지 않는 화자 방지
+    # 3. 존재하지 않는 화자 방지
     # ------------------------------------------------------
 
     if speaker not in speakers:
@@ -692,7 +544,7 @@ async def analyze(
         )
 
     # ------------------------------------------------------
-    # 6. 선택된 화자의 메시지만 추출
+    # 4. 선택된 화자의 메시지만 추출
     # ------------------------------------------------------
 
     selected_messages = [
@@ -709,7 +561,7 @@ async def analyze(
         )
 
     # ------------------------------------------------------
-    # 7. 분석
+    # 5. 분석
     # ------------------------------------------------------
 
     result = analyze_conversation(
@@ -717,7 +569,7 @@ async def analyze(
     )
 
     # ------------------------------------------------------
-    # 8. 최종 결과 반환
+    # 6. 최종 결과 반환
     # ------------------------------------------------------
 
     return {
@@ -745,10 +597,25 @@ async def analyze(
 #
 # 터미널:
 #
-# uvicorn main:app --reload
+# python forty_backend.py
+#
+# 또는:
+#
+# uvicorn forty_backend:app --reload
 #
 # 이후:
 #
 # http://127.0.0.1:8000/docs
 #
 # ==========================================================
+
+if __name__ == "__main__":
+
+    import uvicorn
+
+    uvicorn.run(
+        "forty_backend:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=True
+    )
