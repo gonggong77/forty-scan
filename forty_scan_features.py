@@ -2,7 +2,7 @@
 # forty-scan
 # 영포티 말투 판독기 - 특징추출 공용 모듈
 #
-# forty_scan_현경_모델생성.py 와 forty_scan_현경_테스트.py 가
+# forty_scan_model.py 와 forty_scan_test.py 가
 # 공통으로 import 하는 모듈입니다.
 # 학습 시와 판독(테스트) 시 특징추출 로직이 반드시 동일해야 하므로
 # 이 파일 하나로 관리합니다.
