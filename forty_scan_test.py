@@ -26,7 +26,7 @@ import sys
 
 import joblib
 
-from forty_scan_현경_features import (
+from forty_scan_features import (
     FEATURE_NAMES,
     MODEL_PATH,
     get_grade,
