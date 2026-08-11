@@ -2,7 +2,7 @@
 # forty-scan
 # 영포티 말투 판독기 - 테스트(대화형 판독) 스크립트
 #
-# forty_scan_현경_모델생성.py 로 저장한 모델(model/forty_scan_현경_model.pkl)을
+# forty_scan_model.py 로 저장한 모델(model/forty_scan_현경_model.pkl)을
 # 불러와 문장을 입력받아 영포티 지수를 판독합니다.
 #
 # 특징추출(정규식 사전 + 오타 보정)은 forty_scan_features.py 를
@@ -58,7 +58,7 @@ if not os.path.exists(MODEL_PATH):
     raise FileNotFoundError(
         "\n모델 파일을 찾을 수 없습니다.\n"
         f"현재 경로:\n{MODEL_PATH}\n\n"
-        "forty_scan_현경_모델생성.py 를 먼저 실행해서 모델을 생성하세요."
+        "forty_scan_model.py 를 먼저 실행해서 모델을 생성하세요."
     )
 
 saved = joblib.load(MODEL_PATH)
