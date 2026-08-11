@@ -104,6 +104,21 @@ MODEL_PATH = os.path.join(MODEL_DIR, "forty_scan_현경_model.pkl")
 RANDOM_STATE = 42
 
 
+# ----- 오타 보정 켜기/끄기 스위치 -----
+#
+# True  : 자모 정규화 + 퍼지 매칭을 적용해, 오타가 섞인 문장도 특징을 잡습니다.
+# False : 오타 보정 경로를 통째로 건너뛰고 기존 정규식 결과만 씁니다.
+#
+# 이런 스위치를 왜 두는가?
+#   새 기능을 넣었는데 성능이 오히려 나빠질 수도 있습니다.
+#   그때 코드를 되돌리는 대신 이 값 하나만 False로 바꾸면 즉시 원상복구됩니다.
+#   또 같은 코드로 "켰을 때 vs 껐을 때"를 나란히 비교할 수 있습니다. (eval_baseline.py)
+#
+#   이게 성립하려면 기존 정규식을 절대 고치지 않아야 합니다.
+#   그래서 오타 보정은 전부 '별도 통로'로만 구현했습니다. (섹션 2-1 참고)
+USE_TYPO_CORRECTION = True
+
+
 # ==========================================================
 # 2. 특징(feature) 사전 - 28개
 # ==========================================================
@@ -182,6 +197,427 @@ COMPILED_PATTERNS = [re.compile(pattern) for _, pattern in FEATURES]
 
 
 # ==========================================================
+# 2-1. 오타 보정 (자모 정규화 + 자모 편집거리 퍼지 매칭)
+# ==========================================================
+#
+# [무엇이 문제였나]
+#
+# 위에서 만든 정규식은 "글자가 정확히 똑같을 때만" 잡습니다.
+# 그래서 사용자가 오타를 내면 특징이 통째로 사라져 버립니다.
+#
+#   "아름따우셔서"   → 외모_칭찬 놓침   (다 → 따)
+#   "라때는"         → 라떼_나때 놓침   (떼 → 때)
+#   "옵바가"         → 오빠_호칭 놓침   (빠 → 바)
+#   "살아보닛가"     → 인생선배_훈수 놓침
+#
+# 특징을 놓치면 그 문장의 영포티 지수가 실제보다 낮게 나옵니다.
+#
+#
+# [왜 해밍거리(Hamming distance)를 쓰지 않았나]
+#
+# 처음 떠올리기 쉬운 방법은 "두 단어가 몇 글자나 다른지 세는" 해밍거리입니다.
+# 그런데 이 문제에는 두 가지 이유로 맞지 않습니다.
+#
+#   1) 해밍거리는 '길이가 같은' 문자열에만 정의됩니다.
+#      한글 오타는 대부분 글자가 빠지거나 늘어납니다.
+#
+#         "나 때"(3자)  ↔  "나때"(2자)
+#         "아름다워서"(5자) ↔ "아름다우셔서"(6자)
+#
+#      길이가 다르면 해밍거리는 아예 계산할 수 없습니다.
+#
+#   2) 음절(글자) 단위로 비교하면 오타의 크기가 왜곡됩니다.
+#
+#         "라떼" vs "라때" → 2글자 중 1글자가 다름 = 50% 불일치?
+#
+#      실제로는 ㅔ → ㅐ, 자모 하나 차이일 뿐입니다.
+#      한글은 여러 자모가 한 글자로 뭉쳐 있어서, 글자 단위로 보면
+#      작은 오타가 아주 큰 차이처럼 보입니다.
+#
+#   → 그래서 '삽입/삭제까지 다루는 편집거리(Levenshtein)'를,
+#     '자모 단위로' 적용합니다.
+#
+#
+# [전체 구조 - 3개의 층]
+#
+#   원문 ─┬─→ [1층] 기존 정규식 findall              → regex_count
+#         │
+#         └─→ 자모 분해 + [0층] 자모 정규화
+#                    └─→ [2층] 자모 편집거리 윈도우  → fuzzy_count
+#
+#              최종 값 = max(regex_count, fuzzy_count)
+#
+#
+#   ※ 중요 1 - 정규식은 반드시 '원문'에서만 돌립니다.
+#
+#     자모로 분해한 텍스트에 기존 정규식을 돌리면 안 됩니다.
+#     "하하"를 분해하면 "ㅎㅏㅎㅏ"가 되는데, 이러면 초성 ㅎ이 노출되어
+#     ㅎ{2,} / ㅋ{2,} / 초성체 같은 패턴이 엉뚱하게 반응합니다.
+#     오타 보정은 기존 동작을 건드리지 않는 '별도 통로'로만 더합니다.
+#
+#   ※ 중요 2 - 왜 더하기(+)가 아니라 max인가.
+#
+#     퍼지 매칭은 오차 0짜리, 즉 '정확히 일치하는 경우'도 당연히 잡습니다.
+#     그래서 regex_count + fuzzy_count 로 더해버리면
+#     같은 등장을 두 번 세게 됩니다. max는 이 이중 계수를 구조적으로 막습니다.
+#
+# ==========================================================
+
+
+# ----- 자모 분해에 쓰는 유니코드 상수 -----
+#
+# 한글 음절 '가'(0xAC00) ~ '힣'(0xD7A3)은 규칙적으로 만들어져 있습니다.
+#
+#   코드값 = 0xAC00 + (초성번호 * 588) + (중성번호 * 28) + 종성번호
+#
+# 곱셈으로 조립되어 있으니, 나눗셈으로 되돌리면 초/중/종성을 분리할 수 있습니다.
+# (588 = 21 * 28 = 중성 21개 x 종성 28개)
+
+HANGUL_BASE = 0xAC00   # '가'
+HANGUL_LAST = 0xD7A3   # '힣'
+
+CHOSUNG = "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ"          # 19개
+JUNGSUNG = "ㅏㅐㅑㅒㅓㅔㅕㅖㅗㅘㅙㅚㅛㅜㅝㅞㅟㅠㅡㅢㅣ"        # 21개
+JONGSUNG = " ㄱㄲㄳㄴㄵㄶㄷㄹㄺㄻㄼㄽㄾㄿㅀㅁㅂㅄㅅㅆㅇㅈㅊㅋㅌㅍㅎ"  # 28개(맨 앞은 '없음')
+
+
+# ----- [0층] 자모 정규화 표 -----
+#
+# 한글에서 "오타"라고 부르는 것의 상당수는 사실 발음이 비슷해서 생기는 혼동입니다.
+# 헷갈리는 자모끼리 하나로 합쳐두면, 편집거리를 재기도 전에 아예 같은 글자가 됩니다.
+#
+#   라때  → 라떼        아름따우 → 아름다우        인셍선배 → 인생선배
+#
+# 이 층이 가장 안전합니다.
+# "얼마나 비슷하면 같다고 볼지" 같은 임계값 판단이 전혀 필요 없기 때문입니다.
+# 판단을 안 하니 잘못 판단할 일도 없습니다.
+
+JAMO_NORMALIZE = str.maketrans(
+    {
+        # 된소리 → 예사소리 (ㄲ/ㄸ/ㅃ/ㅆ/ㅉ 은 빠르게 칠 때 자주 틀립니다)
+        "ㄲ": "ㄱ",
+        "ㄸ": "ㄷ",
+        "ㅃ": "ㅂ",
+        "ㅆ": "ㅅ",
+        "ㅉ": "ㅈ",
+        # 소리로는 구분이 거의 안 되는 모음들
+        "ㅐ": "ㅔ",
+        "ㅒ": "ㅖ",
+        "ㅙ": "ㅚ",
+        "ㅞ": "ㅚ",
+        "ㅢ": "ㅣ",
+    }
+)
+
+
+def decompose_jamo(text):
+    """
+    문자열을 자모 단위로 쪼개고, [0층] 정규화까지 적용해서 돌려줍니다.
+
+    반환값 2개:
+      jamo   : 정규화된 자모 문자열   (예: "라떼" → "ㄹㅏㄷㅔ")
+      starts : 원본 '글자'가 시작되는 위치들의 집합 (예: {0, 2})
+
+    starts가 왜 필요한가?
+      자모를 쭉 이어붙이면 글자 경계가 사라집니다.
+      그러면 앞 글자의 종성 한복판부터 매칭이 시작되는 이상한 일이 생길 수 있습니다.
+      매칭 시작점을 '글자가 시작되는 자리'로만 제한해서 이런 헛매칭을 막습니다.
+    """
+
+    pieces = []      # 글자별로 분해한 자모 조각들
+    starts = set()   # 글자가 시작되는 자모 인덱스
+    position = 0     # 지금까지 쌓인 자모 개수
+
+    for char in text:
+
+        # 이 글자가 시작되는 위치를 기록해둡니다.
+        starts.add(position)
+
+        code = ord(char)
+
+        # 한글 음절 범위 안에 있을 때만 분해합니다.
+        if HANGUL_BASE <= code <= HANGUL_LAST:
+
+            offset = code - HANGUL_BASE   # '가'로부터 몇 칸 떨어졌는가
+
+            cho = CHOSUNG[offset // 588]          # 588로 나눈 몫  = 초성
+            jung = JUNGSUNG[offset % 588 // 28]   # 나머지를 28로  = 중성
+            jong = JONGSUNG[offset % 28]          # 28의 나머지    = 종성
+
+            # 종성이 없으면 JONGSUNG[0]인 공백이 나오므로 붙이지 않습니다.
+            piece = cho + jung + (jong if jong != " " else "")
+
+        else:
+            # 한글이 아니면(영어, 숫자, 이모지, 공백) 그대로 둡니다.
+            piece = char
+
+        pieces.append(piece)
+        position += len(piece)
+
+    # 다 이어붙인 다음 [0층] 정규화 표를 한 번에 적용합니다.
+    jamo = "".join(pieces).translate(JAMO_NORMALIZE)
+
+    return jamo, starts
+
+
+def bounded_levenshtein(source, target, cap):
+    """
+    편집거리를 구하되, cap을 넘는 순간 계산을 포기하고 cap+1을 돌려줍니다.
+
+    편집거리(Levenshtein distance)란?
+      한 문자열을 다른 문자열로 바꾸는 데 필요한 최소 편집 횟수입니다.
+      편집은 3가지: 글자 삭제 / 글자 삽입 / 글자 교체.
+      해밍거리와 달리 삽입과 삭제를 다루므로 길이가 달라도 계산됩니다.
+
+    왜 중간에 포기하나?
+      우리는 정확한 거리값이 필요한 게 아니라
+      "cap 이하인가?"라는 예/아니오만 알면 됩니다.
+      그래서 이미 cap을 넘은 게 확정되면 끝까지 계산할 이유가 없습니다.
+      문장 수천 개를 처리해야 하므로 이 조기 종료가 속도에 크게 도움이 됩니다.
+    """
+
+    # 길이 차이만으로 이미 cap을 넘는다면 볼 것도 없습니다.
+    # (길이가 3 차이나면 최소 3번은 삽입/삭제해야 하므로)
+    if abs(len(source) - len(target)) > cap:
+        return cap + 1
+
+    # previous = 바로 윗줄의 계산 결과 (표 전체를 들고 있을 필요가 없습니다)
+    previous = list(range(len(target) + 1))
+
+    for i, source_char in enumerate(source, start=1):
+
+        current = [i]
+
+        for j, target_char in enumerate(target, start=1):
+            current.append(
+                min(
+                    previous[j] + 1,                                 # 삭제
+                    current[j - 1] + 1,                              # 삽입
+                    previous[j - 1] + (source_char != target_char),  # 교체
+                )
+            )
+
+        # 이 줄의 최솟값이 이미 cap을 넘었다면, 최종 거리도 반드시 cap을 넘습니다.
+        if min(current) > cap:
+            return cap + 1
+
+        previous = current
+
+    return previous[-1]
+
+
+def error_budget(keyword_jamo):
+    """
+    키워드 길이에 따라 '오타를 몇 개까지 봐줄지'를 정합니다.
+
+    [왜 "유사도 0.8 이상이면 같은 단어" 같은 고정 기준을 쓰면 안 되는가]
+
+    짧은 단어에서는 '전혀 다른 단어'가 오타와 똑같은 점수를 받기 때문입니다.
+
+        미인 / 미안  →  자모 5개, 편집거리 1   ← 완전히 다른 단어!
+        인연 / 인원  →  자모 6개, 편집거리 1   ← 완전히 다른 단어!
+        조언 / 조인  →  자모 5개, 편집거리 1   ← 완전히 다른 단어!
+
+    반면 긴 단어에서 편집거리 1은 대체로 진짜 오타입니다.
+
+        아름다우셔서 / 아름다우서서  →  자모 13개, 편집거리 1  ← 진짜 오타
+
+    같은 "편집거리 1"인데 의미가 정반대입니다.
+    즉 거리 하나만으로는 구분이 안 되고, '길이 대비 얼마나 틀렸나'를 봐야 합니다.
+
+    그래서 짧은 키워드는 오타를 아예 안 봐주고, 길수록 넉넉하게 봐줍니다.
+    """
+
+    length = len(keyword_jamo)
+
+    if length <= 6:      # 2음절 이하 → 오타 허용 안 함 (미인/미안 오탐 차단)
+        return 0
+    if length <= 11:     # 3~4음절   → 1개까지 봐줌
+        return 1
+    return 2             # 5음절 이상 → 2개까지 봐줌
+
+
+def _match_at(text_jamo, index, keyword_jamo, budget):
+    """
+    text_jamo의 index 자리에서 키워드가 (오차 budget 이내로) 시작하는지 봅니다.
+
+    맞으면 '매칭된 길이'를, 아니면 0을 돌려줍니다.
+
+    길이를 여러 개 시도하는 이유:
+      오타로 글자가 빠지거나 늘어날 수 있으므로,
+      키워드보다 조금 짧은 구간부터 조금 긴 구간까지 훑어봐야 합니다.
+    """
+
+    keyword_length = len(keyword_jamo)
+    text_length = len(text_jamo)
+
+    shortest = max(1, keyword_length - budget)
+
+    for window_length in range(shortest, keyword_length + budget + 1):
+
+        if index + window_length > text_length:
+            break
+
+        window = text_jamo[index : index + window_length]
+
+        if bounded_levenshtein(keyword_jamo, window, budget) <= budget:
+            return window_length
+
+    return 0
+
+
+def fuzzy_count(text_jamo, starts, entries):
+    """
+    한 특징의 키워드들이 이 문장에 몇 번 '등장'하는지 셉니다.
+
+    [키워드마다 따로 세서 더하면 안 되는 이유]
+
+    한 특징 안에는 비슷한 변형이 여러 개 들어 있습니다.
+
+        외모_칭찬 = [... "아름다우", "아름다운", "아름다워" ...]
+
+    "아름다우셔서"는 이 셋에 전부 걸립니다.
+    키워드별로 따로 세서 더하면 1번 등장이 3으로 부풀려집니다.
+    (multi-hot은 '등장 횟수'가 값이므로 이러면 값이 왜곡됩니다)
+
+    그래서 문장을 딱 한 번만 훑으면서,
+    같은 자리에서 여러 키워드가 걸려도 1번으로 셉니다.
+    """
+
+    text_length = len(text_jamo)
+
+    count = 0
+    index = 0
+
+    while index < text_length:
+
+        # 글자 중간(예: 종성 자리)에서 시작하는 매칭은 건너뜁니다.
+        if index not in starts:
+            index += 1
+            continue
+
+        longest = 0
+
+        for keyword_jamo, budget in entries:
+
+            # 남은 텍스트가 키워드보다 짧으면 볼 것도 없습니다. (속도용 사전 필터)
+            if text_length - index < len(keyword_jamo) - budget:
+                continue
+
+            matched = _match_at(text_jamo, index, keyword_jamo, budget)
+
+            # 같은 자리에서 여러 키워드가 걸리면 가장 긴 것 기준으로 건너뜁니다.
+            if matched > longest:
+                longest = matched
+
+        if longest:
+            count += 1
+            index += longest   # 방금 잡은 구간은 건너뛰어 두 번 세지 않습니다.
+        else:
+            index += 1
+
+    return count
+
+
+# ----- 퍼지 매칭을 적용할 키워드 목록 -----
+#
+# 위 FEATURES의 정규식에서 자동으로 뽑지 않고, 손으로 다시 적었습니다.
+# 정규식에는 문자 클래스([가-힣]), 수량자({2,}), 대안(|) 같은 기호가 섞여 있어서
+# 그대로는 "단어"로 취급할 수 없기 때문입니다.
+#
+# [여기 없는 특징들은 왜 뺐나]
+#
+#   기호/표기 특징 (물결 ~, 느낌표 !, 이모지, ㅎㅎ, ㅋㅋ, 초성체 ...)
+#     → 기호에 오타 보정은 의미가 없습니다. 위험하기만 합니다.
+#
+#   짧고 흔한 단어 (내가, 제가, 사람, 인생, 님, 씨 ...)
+#     → 일상 대화에 너무 흔해서 오탐(잘못 잡기)의 원인이 됩니다.
+#
+# [정규화 충돌 때문에 뺀 것]
+#
+#   "로써"  → 정규화하면 "로서"와 같아집니다. ("학생으로서" 같은 평범한 문장까지 잡힘)
+#   "짱"    → 정규화하면 "장"과 같아집니다.   ("사장", "장소"까지 잡힘)
+
+FUZZY_KEYWORDS = {
+    "오빠_호칭": ["오빠", "옵빠", "누나"],
+    "외모_칭찬": [
+        "처자", "미인", "미녀", "늘씬", "아름다우", "아름다운", "아름다워",
+        "예쁘", "이쁘", "동안", "훈남",
+    ],
+    "인연_운명": ["인연", "운명", "만남 시작"],
+    "인생선배_훈수": ["인생선배", "오빠로써", "살아보니까", "살다 보니", "조언"],
+    "라떼_나때": ["라떼", "나 때", "우리 때", "내가 젊", "왕년"],
+    "요즘애들": ["요즘 애들", "요즘 것들", "요즘 젊은", "요즘 친구"],
+    "젊음_강조": ["젊음", "젊은 애들", "젊은 남자", "핫바리", "젊게"],
+    "옛날_유행어": ["핫플레이스", "고고씽", "방가", "열정", "대쉬", "전번", "므흣"],
+    "감탄사_에혀": ["에혀", "어허", "허허", "아이고", "어이쿠", "허참"],
+    "조언_해야지": ["해야지", "해야죠", "하셔야", "하는 게 좋", "하시는 게"],
+    "확인_의문": ["어쩌죠", "그쵸", "그죠", "어떠신가요", "어떨까요", "아닌가요"],
+    "신조어_줄임말": [
+        "실화냐", "갑분", "킹받", "어쩔", "팀플", "에타", "빡세",
+        "존나", "점메추",
+    ],
+}
+
+
+# ----- 별칭(다른 이름) 사전 -----
+#
+# 위의 오차 예산 규칙은 짧은 단어의 오타를 '일부러' 막습니다. (미인/미안 때문에)
+# 그런데 그중에는 실제로 꼭 잡아야 하는 변형도 있습니다.
+# 그런 것들만 여기에 직접 적어둡니다.
+#
+# 별칭은 항상 오차 0(정확히 일치)으로만 매칭하므로 새로운 오탐을 만들지 않습니다.
+#
+# ※ 기존 FEATURES 정규식은 한 글자도 고치지 않았습니다.
+#   정규식에 별칭을 끼워 넣으면 USE_TYPO_CORRECTION = False 로 되돌려도
+#   그 부분만 남아버려서, 완전한 원복이 불가능해지기 때문입니다.
+
+ALIASES = {
+    "오빠_호칭": ["옵바"],
+    # "아이고"는 자모가 6개라 예산이 0입니다. 흔한 변형만 직접 열어둡니다.
+    "감탄사_에혀": ["아이구", "어이구"],
+    # 정규식이 띄어쓰기를 요구하는 것들의 '붙여 쓴' 형태
+    "라떼_나때": ["나때", "우리때"],
+    "요즘애들": ["요즘애들", "요즘것들", "요즘젊은", "요즘친구"],
+    "젊음_강조": ["젊은애들", "젊은남자"],
+    "인연_운명": ["만남시작"],
+}
+
+
+def _build_fuzzy_table():
+    """
+    특징 이름 → [(키워드의 자모, 오차 예산), ...] 형태의 표를 미리 만들어 둡니다.
+
+    자모 분해와 예산 계산은 문장이 바뀌어도 결과가 똑같습니다.
+    문장마다 다시 계산하면 낭비이므로 프로그램 시작할 때 딱 한 번만 합니다.
+    (COMPILED_PATTERNS를 미리 컴파일해두는 것과 같은 이유입니다)
+    """
+
+    table = {}
+
+    for name in FEATURE_NAMES:
+
+        entries = []
+
+        for keyword in FUZZY_KEYWORDS.get(name, []):
+            keyword_jamo, _ = decompose_jamo(keyword)
+            entries.append((keyword_jamo, error_budget(keyword_jamo)))
+
+        # 별칭은 예산을 무조건 0으로 고정합니다.
+        for alias in ALIASES.get(name, []):
+            alias_jamo, _ = decompose_jamo(alias)
+            entries.append((alias_jamo, 0))
+
+        if entries:
+            table[name] = entries
+
+    return table
+
+
+FUZZY_TABLE = _build_fuzzy_table()
+
+
+# ==========================================================
 # 3. 등급 기준표
 # ==========================================================
 # 모델이 계산한 "영포티 지수(0~100점)"를 사람이 이해하기 쉬운
@@ -246,7 +682,7 @@ def get_grade(score):
 # ==========================================================
 
 
-def text_to_multihot(text, patterns=COMPILED_PATTERNS):
+def text_to_multihot(text, patterns=COMPILED_PATTERNS, return_fuzzy_flags=False):
     """
     문장 1개를 28차원 multi-hot 벡터로 변환합니다.
 
@@ -259,6 +695,13 @@ def text_to_multihot(text, patterns=COMPILED_PATTERNS):
     라떼_나때 → 3 (라떼, 우리 때, 나 때)
     느낌표    → 2
     나머지    → 0
+
+    USE_TYPO_CORRECTION이 True면, 정규식이 놓친 오타를
+    자모 편집거리로 한 번 더 찾아봅니다. (섹션 2-1 참고)
+
+    return_fuzzy_flags=True로 부르면
+    '정규식은 못 잡았는데 오타 보정이 잡아낸' 특징 이름들을 함께 돌려줍니다.
+    판독 결과에 (오타보정) 표시를 붙이는 데 씁니다.
     """
 
     # 만약 text가 None(값이 아예 없음)으로 들어오면 빈 문자열로 처리합니다.
@@ -269,19 +712,57 @@ def text_to_multihot(text, patterns=COMPILED_PATTERNS):
     # text가 숫자 등 다른 타입으로 들어와도 안전하게 문자열로 강제 변환합니다.
     text = str(text)
 
-    vector = []  # 이 문장의 28개 특징 값을 순서대로 담을 빈 리스트
+    # 자모 분해는 '문장당 딱 한 번'만 합니다.
+    # 키워드마다 다시 분해하면 같은 일을 수십 번 반복하게 되어 느려집니다.
+    if USE_TYPO_CORRECTION and FUZZY_TABLE:
+        text_jamo, starts = decompose_jamo(text)
+    else:
+        text_jamo, starts = "", set()
 
-    # 컴파일해둔 정규식 패턴 28개를 순서대로 하나씩 꺼내서
-    for pattern in patterns:
+    vector = []          # 이 문장의 28개 특징 값을 순서대로 담을 빈 리스트
+    fuzzy_flags = set()  # 오타 보정 덕분에 잡힌 특징 이름들
+
+    # 특징 이름과 컴파일해둔 정규식을 짝지어 하나씩 꺼내서
+    for name, pattern in zip(FEATURE_NAMES, patterns):
+
+        # ----- [1층] 기존 정규식 -----
+        #
         # pattern.findall(text) → 이 문장 안에서 패턴과 일치하는 부분을
         #                          모두 찾아서 리스트로 반환 (예: ["ㅎㅎ", "ㅎㅎㅎ"])
         # len(...) → 그 리스트의 길이 = 몇 번 매칭되었는지(등장 횟수)
+        #
+        # 반드시 '원문(text)'에서 돌립니다. 자모로 분해한 것에 돌리면 안 됩니다.
         count = len(pattern.findall(text))
+
+        # ----- [2층] 오타 보정 -----
+        #
+        # FUZZY_TABLE에 등록된 특징(어휘 특징)만 추가로 확인합니다.
+        entries = FUZZY_TABLE.get(name) if text_jamo else None
+
+        if entries:
+
+            fuzzy = fuzzy_count(text_jamo, starts, entries)
+
+            # 퍼지 매칭은 '정확히 일치하는 경우'도 잡으므로
+            # 더하면 같은 등장을 두 번 세게 됩니다. 그래서 max로 고릅니다.
+            if fuzzy > count:
+
+                # 정규식이 0이었는데 퍼지가 잡았다 = 순수하게 오타 보정 덕분
+                if count == 0:
+                    fuzzy_flags.add(name)
+
+                count = fuzzy
+
         vector.append(count)
 
     # 파이썬 리스트를 numpy 배열로 바꿔서 반환합니다.
     # (numpy 배열이어야 이후 모델(sklearn)에 바로 넣을 수 있습니다)
-    return np.array(vector, dtype=float)
+    vector = np.array(vector, dtype=float)
+
+    if return_fuzzy_flags:
+        return vector, fuzzy_flags
+
+    return vector
 
 
 def transform_texts(texts):
@@ -588,7 +1069,21 @@ os.makedirs(MODEL_DIR, exist_ok=True)
 # 딕셔너리 하나로 묶어서 pkl 파일로 저장합니다.
 # → 나중에 이 pkl 하나만 불러오면 "모델"과 "이 모델이 어떤 특징을
 #    기준으로 학습됐는지"를 둘 다 알 수 있습니다.
-joblib.dump({"model": model, "features": FEATURES}, MODEL_PATH)
+#
+# 오타 보정 설정도 같이 저장합니다.
+# 나중에 이 pkl을 불러 쓰는 쪽에서 학습 때와 '똑같은 전처리'를 재현해야 하기 때문입니다.
+# 학습할 때와 예측할 때 벡터 만드는 방식이 다르면,
+# 학습된 가중치가 엉뚱한 숫자에 곱해져서 점수가 이상해집니다.
+joblib.dump(
+    {
+        "model": model,
+        "features": FEATURES,
+        "use_typo_correction": USE_TYPO_CORRECTION,
+        "fuzzy_keywords": FUZZY_KEYWORDS,
+        "aliases": ALIASES,
+    },
+    MODEL_PATH,
+)
 
 print(f"      저장 완료 : {MODEL_PATH}")
 
@@ -608,11 +1103,13 @@ def predict_forty(text):
     반환값:
     score        : 영포티 지수 (0~100)
     vector       : 28차원 multi-hot 벡터
-    contributions: (특징명, 등장횟수, 계수, 기여도) 리스트 (기여도 절댓값 내림차순)
+    contributions: (특징명, 등장횟수, 계수, 기여도, 오타보정여부) 리스트
+                   (기여도 절댓값 내림차순)
     """
 
     # 1) 입력 문장을 학습 때와 똑같은 방식으로 28차원 벡터로 변환
-    vector = text_to_multihot(text)
+    #    return_fuzzy_flags=True → 어떤 특징이 오타 보정 덕분에 잡혔는지도 함께 받음
+    vector, fuzzy_flags = text_to_multihot(text, return_fuzzy_flags=True)
 
     # 2) 학습된 모델에 벡터를 넣어서 "영포티(클래스 1)일 확률"을 구함
     #    predict_proba → [[일반일 확률, 영포티일 확률]] 형태의 2차원 배열을 반환하므로
@@ -631,7 +1128,11 @@ def predict_forty(text):
             # 기여도 = 등장 횟수 × 가중치
             # → "몇 번 나왔는지"와 "얼마나 중요한 특징인지"를 곱해서
             #    이 특징이 최종 점수에 실제로 얼마나 영향을 줬는지를 나타냄
-            contributions.append((name, int(count), coef, count * coef))
+            #
+            # 마지막 값은 "정규식은 놓쳤는데 오타 보정이 잡아낸 특징인가?"입니다.
+            contributions.append(
+                (name, int(count), coef, count * coef, name in fuzzy_flags)
+            )
 
     # 기여도의 절댓값이 큰 순서(=영향력이 큰 순서)로 정렬
     # (기여도가 음수든 양수든, "영향을 많이 준" 순서로 보여주기 위함)
@@ -686,11 +1187,16 @@ while True:  # 사용자가 종료하지 않는 한 계속 반복
 
     if contributions:
         # 검출된 특징이 1개 이상 있으면, 표 형태로 상세 내역을 출력
-        print(f" {'검출된 특징':<18}{'횟수':>6}{'가중치':>10}{'기여도':>10}")
+        print(f" {'검출된 특징':<18}{'횟수':>6}{'가중치':>10}{'기여도':>10}   비고")
         print(" " + "-" * 68)
 
-        for name, count, coef, contribution in contributions:
-            print(f" {name:<18}{count:>6}{coef:>+10.2f}{contribution:>+10.2f}")
+        for name, count, coef, contribution, is_fuzzy in contributions:
+            # 정규식은 놓쳤는데 오타 보정이 잡아낸 특징에는 표시를 붙여줍니다.
+            # (왜 이 특징이 잡혔는지 사용자가 알 수 있도록)
+            note = "(오타보정)" if is_fuzzy else ""
+            print(
+                f" {name:<18}{count:>6}{coef:>+10.2f}{contribution:>+10.2f}   {note}"
+            )
     else:
         # 검출된 특징이 하나도 없으면 안내 문구만 출력
         print(" 사전에 등록된 특징이 검출되지 않았습니다.")
