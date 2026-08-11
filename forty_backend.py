@@ -40,16 +40,14 @@ from fastapi.middleware.cors import CORSMiddleware
 # 1. 기본 설정
 # ==========================================================
 
-BASE_DIR = os.path.dirname(
-    os.path.abspath(__file__)
-)
+# ==========================================================
+# 1. 기본 설정
+# ==========================================================
 
 MODEL_PATH = os.path.join(
-    BASE_DIR,
     "model",
     "forty_scan_현경_model.pkl"
 )
-
 
 # ==========================================================
 # 2. FastAPI 앱 생성
