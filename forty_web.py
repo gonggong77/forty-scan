@@ -44,7 +44,7 @@ from fastapi.staticfiles import StaticFiles
 # 기존 백엔드를 그대로 재사용합니다.
 #
 # app                   : 이미 만들어진 FastAPI 인스턴스 (CORS 설정 포함)
-# MODEL                 : 시작할 때 한 번 로드된 로지스틱 회귀 모델
+# COEFFICIENTS          : 로지스틱 회귀 계수 26개 (근거 특징 정렬에 씀)
 # decode_txt            : utf-8 / utf-8-sig / cp949 자동 판별
 # get_speakers          : 등장 순서대로 화자 목록
 # analyze_conversation  : 화자 1명의 메시지 목록 → 최종 영포티 지수
@@ -52,7 +52,7 @@ from fastapi.staticfiles import StaticFiles
 # parse_kakao_txt 는 여러 줄 메시지를 버리기 때문에
 # 아래 섹션 2에서 따로 파서를 둡니다. (기존 함수는 그대로 살아 있습니다.)
 from forty_backend import (
-    MODEL,
+    COEFFICIENTS,
     analyze_conversation,
     app,
     decode_txt,
@@ -70,7 +70,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
-# 로지스틱 회귀 계수 (29개, FEATURE_NAMES 와 같은 순서)
+# 로지스틱 회귀 계수(26개, FEATURE_NAMES 와 같은 순서)는
+# forty_backend 에서 가져옵니다.
 #
 # 근거 표시에 씁니다.
 # 등장 횟수만으로 정렬하면 느낌표 / 존칭_님씨 처럼
@@ -78,7 +79,6 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 #
 # 그래서 forty_scan_test.py 의 predict_forty 와 동일하게
 # 기여도 = 등장 횟수 x 계수 로 정렬합니다.
-COEFFICIENTS = MODEL.coef_[0]
 
 # 화자 카드 하나에 보여줄 근거 특징 개수
 TOP_FEATURE_COUNT = 6
@@ -418,7 +418,7 @@ def pick_top_sentences(sentence_results):
     문장별 결과를 전부 내보내면 대화가 길 때 응답이 수 MB가 되므로
     상위 TOP_SENTENCE_COUNT 개만 담습니다.
 
-    vector(29차원)는 화면에 쓰지 않으므로 제외합니다.
+    vector(26차원)는 화면에 쓰지 않으므로 제외합니다.
     """
 
     ordered = sorted(
@@ -513,6 +513,13 @@ async def analyze_all(
                 "final_comment": analyzed["final_comment"],
 
                 "message_count": analyzed["message_count"],
+
+                # 표본이 얼마나 되는지
+                #
+                # reliability     : 0(근거 없음) ~ 1(충분)
+                # is_provisional  : True 면 등급이 "표본 부족" 이고 판정 보류
+                "reliability": analyzed["reliability"],
+                "is_provisional": analyzed["is_provisional"],
 
                 # 근거
                 "top_features": aggregate_features(

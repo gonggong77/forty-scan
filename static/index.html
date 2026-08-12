@@ -367,6 +367,19 @@ function gradeColor(score) {
   return "#ff6b6b";
 }
 
+/* 화자 카드 색.
+
+   문장이 너무 적어 판정을 보류한 화자(is_provisional)는
+   등급 색 대신 회색을 씁니다.
+   초록/빨강이 붙으면 판정이 난 것처럼 읽히기 때문입니다.
+
+   문장 하나짜리 판독에는 쓰지 않습니다. 그건 표본 개념이 없습니다. */
+
+function speakerColor(r) {
+  if (r.is_provisional) return "#868e96";
+  return gradeColor(r.final_score);
+}
+
 /* ---------------- 드래그앤드롭 ---------------- */
 
 /* dragover 에서 preventDefault 를 하지 않으면
@@ -477,7 +490,7 @@ function render(data) {
 }
 
 function card(r, rank) {
-  const color = gradeColor(r.final_score);
+  const color = speakerColor(r);
 
   const el = document.createElement("div");
   el.className = "card";
@@ -524,19 +537,29 @@ function card(r, rank) {
   fill.style.width = Math.max(0, Math.min(100, r.final_score)) + "%";
   fill.style.background = color;
 
+  /* 판정 보류면 막대를 흐리게 해서 잠정값임을 드러냅니다. */
+  if (r.is_provisional) {
+    fill.style.opacity = "0.45";
+  }
+
   bar.appendChild(fill);
   el.appendChild(bar);
 
   /* --- 메시지 수 / 표본 경고 --- */
 
+  /* 신뢰도는 백엔드가 계산합니다. n / (n + PRIOR_MESSAGE_COUNT)
+     여기서 임계값을 다시 하드코딩하지 않습니다. */
+
   const meta = document.createElement("div");
   meta.className = "meta";
-  meta.textContent = "분석 문장 " + r.message_count + "개";
+  meta.textContent =
+    "분석 문장 " + r.message_count + "개 · 신뢰도 " +
+    Math.round(r.reliability * 100) + "%";
 
-  if (r.message_count < 3) {
+  if (r.is_provisional) {
     const warn = document.createElement("span");
     warn.className = "warn";
-    warn.textContent = " · 표본이 적어 신뢰도가 낮습니다";
+    warn.textContent = " · 표본이 부족해 판정을 보류했습니다";
     meta.appendChild(warn);
   }
 
