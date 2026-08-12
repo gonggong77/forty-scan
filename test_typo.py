@@ -32,7 +32,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 # ==========================================================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SOURCE_PATH = os.path.join(BASE_DIR, "forty_scan_현경.py")
+SOURCE_PATH = os.path.join("__pycache__\\save\\forty_scan_현경.py")
 
 SENTINEL = "# 5. 프로그램 시작"
 
