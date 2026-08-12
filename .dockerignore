@@ -1,0 +1,68 @@
+# ==========================================================
+# forty-scan - 빌드 컨텍스트에서 제외할 것
+#
+# .gcloudignore 와 내용이 동일합니다. 한쪽만 고치지 마세요.
+#
+# 주의 1: 이 파일에는 한글(비ASCII) 패턴을 넣지 않습니다.
+#         남겨야 할 pkl 이 하필 한글 이름이라,
+#         ASCII 이름인 나머지 6개를 명시적으로 제외하는 방식을 씁니다.
+#
+# 주의 2: Dockerfile 을 절대 제외하지 마세요.
+#         .gcloudignore 가 Dockerfile 을 가리면
+#         gcloud run deploy --source 가 조용히 buildpack 으로 폴백해서
+#         엉뚱한 진입점의 이미지를 만듭니다. (에러 없이 잘못된 결과)
+# ==========================================================
+
+# --- 버전관리 / 에디터 / 에이전트 ---
+.git
+.gitignore
+.gitattributes
+.claude
+.vscode
+.idea
+
+# --- 파이썬 캐시 / 가상환경 ---
+__pycache__
+**/__pycache__
+*.py[cod]
+.venv
+venv
+.pytest_cache
+.mypy_cache
+
+# --- 문서 (PRD 4개 포함, 전부 .md) ---
+*.md
+
+# --- 학습 전용 데이터 / 원본 아트(5.7MB) ---
+#     서빙에 쓰는 이미지는 charimg_web/ 입니다. charImg/ 는 4K 원본이라 불필요.
+data
+charImg
+
+# --- 개발 전용 의존성 목록 ---
+requirements-dev.txt
+
+# --- 학습 / CLI 스크립트: 서빙 import 그래프 밖입니다 ---
+#     forty_scan_*.py 로 묶어 제외한 뒤,
+#     런타임에 반드시 필요한 features 만 되살립니다. (뒤 규칙이 우선)
+eval_baseline.py
+test_typo.py
+forty_scan_*.py
+!forty_scan_features.py
+
+# --- 코드가 참조하지 않는 모델 6개 (1.34MB) ---
+#     실제로 로드되는 것은 model/forty_scan_현경_model.pkl (3,790 bytes) 하나뿐입니다.
+model/forty_scan_feature_vectorizer.pkl
+model/forty_scan_logistic_model.pkl
+model/forty_scan_model.pkl
+model/forty_scan_text_vectorizer.pkl
+model/forty_scan_vectorizer.pkl
+model/forty_scan_weighted_logistic_model.pkl
+
+# ==========================================================
+# 반드시 남아야 하는 것 (배포 전 확인)
+#   forty_web.py, forty_backend.py, forty_scan_features.py
+#   requirements.txt, Dockerfile
+#   model/forty_scan_현경_model.pkl
+#   static/ 전체 (index.html, img/keyart.png)
+#   charimg_web/ 전체 (PNG 5개)
+# ==========================================================

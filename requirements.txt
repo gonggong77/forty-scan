@@ -1,7 +1,28 @@
-fastapi
-uvicorn[standard]
-python-multipart
-joblib
-numpy
-scikit-learn
-pandas
+# ==========================================================
+# forty-scan - 서빙(프로덕션) 의존성
+#
+# 서빙에 실제로 필요한 것만 담고, 전부 == 로 버전을 고정합니다.
+#
+# 버전을 고정하는 이유:
+#   model/forty_scan_현경_model.pkl 은 scikit-learn 1.9.0 으로
+#   학습된 pickle 입니다. 다른 버전으로 joblib.load 하면
+#     (1) import 시점에 터져서 컨테이너가 아예 뜨지 않거나
+#     (2) 경고만 내고 조용히 "다른 점수"를 냅니다.
+#   (2)가 훨씬 위험합니다. 그래서 고정합니다.
+#
+# pandas 는 학습 스크립트 전용이라 여기 없습니다.
+# 개발할 때는 requirements-dev.txt 를 쓰세요.
+#
+#   개발:  pip install -r requirements-dev.txt
+#   배포:  Dockerfile 이 이 파일을 씁니다
+# ==========================================================
+
+fastapi==0.141.1
+starlette==1.6.0
+pydantic==2.13.4
+uvicorn[standard]==0.52.1
+python-multipart==0.0.32
+joblib==1.5.3
+numpy==2.5.1
+scipy==1.18.0
+scikit-learn==1.9.0

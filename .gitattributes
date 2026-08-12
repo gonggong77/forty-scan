@@ -1,2 +1,15 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# 모델 / 이미지는 절대 개행 정규화하지 않습니다.
+# (지금도 git 이 바이너리로 자동 판정하고 있지만,
+#  GitHub 자동배포는 리눅스에서 새로 checkout 하므로 명시해 둡니다.)
+*.pkl binary
+*.png binary
+
+# 리눅스 컨테이너로 들어가는 파일은 항상 LF 로 고정합니다.
+# (CRLF 로 체크아웃되면 Dockerfile 의 \ 줄바꿈 연결이 깨질 수 있습니다)
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+.gcloudignore text eol=lf
+requirements*.txt text eol=lf
