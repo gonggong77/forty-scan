@@ -515,6 +515,15 @@ button:disabled { cursor: default; opacity: .5; }
   animation: screenIn .2s ease both;
 }
 
+[data-screen="result-sentence"] .accordion,
+[data-screen="result-speaker"] .accordion {
+  border-color: var(--green);
+}
+[data-screen="result-sentence"] .accordion > summary,
+[data-screen="result-speaker"] .accordion > summary {
+  color: var(--green);
+}
+
 .acc-title { font-size: 11px; font-weight: 800; color: var(--green-dk); margin: 10px 0 8px; }
 
 .feat { margin-bottom: 9px; }
