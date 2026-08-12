@@ -70,6 +70,29 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 STATIC_DIR = os.path.join(BASE_DIR, "static")
 
+# 등급별 캐릭터 이미지 폴더입니다.
+#
+# charimg_web/1단계.png ~ charimg_web/5단계.png 가
+# forty_scan_features.py 의 GRADES 5구간과 순서대로 짝을 이룹니다.
+#
+#   1단계 = 진성 MZ            (0  ~ 20)
+#   2단계 = 정상 범주          (20 ~ 40)
+#   3단계 = 영포티 경계        (40 ~ 60)
+#   4단계 = MZ 코스프레 40대   (60 ~ 80)
+#   5단계 = 확진 영포티        (80 ~ )
+#
+# 원본은 charImg/ 에 있지만 장당 0.7~1.6MB(4K 해상도)라
+# 결과 화면(가로 380px 안팎)에 쓰기엔 과합니다.
+#
+# charimg_web/ 은 640px 폭으로 줄이고 색을 256색으로 낮춘 서빙용 사본입니다.
+# (레티나 2배 화면까지 커버하는 최소 크기이고, 5장 합계 6MB → 300KB 로 줄어듭니다.)
+# 원본이 바뀌면 이 사본도 다시 만들어야 합니다.
+#
+# static 폴더 밖에 있어서 /ui 마운트로는 접근할 수 없으므로
+# 아래 7번 섹션에서 /charimg 로 따로 붙입니다.
+
+CHARIMG_DIR = os.path.join(BASE_DIR, "charimg_web")
+
 # 로지스틱 회귀 계수(26개, FEATURE_NAMES 와 같은 순서)는
 # forty_backend 에서 가져옵니다.
 #
@@ -583,6 +606,31 @@ app.mount(
         html=True
     ),
     name="ui"
+)
+
+
+# 등급별 캐릭터 이미지입니다.
+#
+# 화면에서는 점수 구간을 1~5 로 바꾼 뒤
+#
+#   /charimg/1단계.png ~ /charimg/5단계.png
+#
+# 으로 부릅니다. (한글 파일명은 브라우저가 알아서 인코딩합니다.)
+
+if not os.path.isdir(CHARIMG_DIR):
+
+    raise FileNotFoundError(
+        f"\n캐릭터 이미지 폴더를 찾을 수 없습니다.\n"
+        f"경로:\n{CHARIMG_DIR}\n"
+    )
+
+
+app.mount(
+    "/charimg",
+    StaticFiles(
+        directory=CHARIMG_DIR
+    ),
+    name="charimg"
 )
 
 

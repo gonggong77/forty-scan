@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FORTY-SCAN · 영포티 말투 판독기</title>
+<style>
+  :root {
+    --bg:        #0f1115;
+    --panel:     #171a21;
+    --panel-2:   #1e222b;
+    --line:      #2a2f3a;
+    --text:      #e6e8ee;
+    --muted:     #8b93a7;
+    --accent:    #7c8cff;
+    --up:        #ff6b6b;
+    --down:      #4dabf7;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 32px 20px 80px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Pretendard", "Apple SD Gothic Neo", "Malgun Gothic",
+                 "맑은 고딕", system-ui, -apple-system, sans-serif;
+    line-height: 1.6;
+  }
+
+  .wrap { max-width: 860px; margin: 0 auto; }
+
+  header { text-align: center; margin-bottom: 28px; }
+
+  h1 {
+    margin: 0 0 6px;
+    font-size: 28px;
+    letter-spacing: -0.5px;
+  }
+
+  .sub { color: var(--muted); font-size: 14px; margin: 0; }
+
+  /* ---------- 업로드 존 ---------- */
+
+  #drop {
+    border: 2px dashed var(--line);
+    border-radius: 14px;
+    background: var(--panel);
+    padding: 44px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+
+  #drop:hover { border-color: var(--accent); }
+
+  #drop.hot {
+    border-color: var(--accent);
+    background: var(--panel-2);
+  }
+
+  #drop .big { font-size: 17px; font-weight: 600; }
+
+  #drop .hint { color: var(--muted); font-size: 13px; margin-top: 8px; }
+
+  #filename {
+    margin-top: 14px;
+    font-size: 14px;
+    color: var(--accent);
+    word-break: break-all;
+  }
+
+  /* ---------- 상태 ---------- */
+
+  #status {
+    margin: 20px 0 0;
+    text-align: center;
+    font-size: 14px;
+    color: var(--muted);
+    min-height: 22px;
+  }
+
+  #status.error {
+    color: #ffa8a8;
+    background: rgba(255, 107, 107, .08);
+    border: 1px solid rgba(255, 107, 107, .25);
+    border-radius: 10px;
+    padding: 12px 14px;
+    text-align: left;
+  }
+
+  /* ---------- 결과 ---------- */
+
+  #summary {
+    margin: 28px 0 12px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 20px 22px;
+    margin-bottom: 14px;
+  }
+
+  .card-top {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .rank {
+    color: var(--muted);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .speaker { font-size: 18px; font-weight: 700; }
+
+  .score {
+    margin-left: auto;
+    font-size: 30px;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -1px;
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 700;
+    color: #0f1115;
+  }
+
+  .comment { color: var(--muted); font-size: 13px; margin-top: 6px; }
+
+  .bar {
+    height: 8px;
+    border-radius: 999px;
+    background: var(--panel-2);
+    margin: 14px 0 4px;
+    overflow: hidden;
+  }
+
+  .bar > i { display: block; height: 100%; border-radius: 999px; }
+
+  .meta { font-size: 12px; color: var(--muted); }
+
+  .warn { color: #ffd43b; }
+
+  /* ---------- 근거 칩 ---------- */
+
+  .section-label {
+    font-size: 12px;
+    color: var(--muted);
+    margin: 16px 0 8px;
+    letter-spacing: .3px;
+  }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+  .chip {
+    font-size: 12px;
+    padding: 4px 10px;
+    border-radius: 8px;
+    border: 1px solid;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .chip.up {
+    color: #ffc9c9;
+    border-color: rgba(255, 107, 107, .4);
+    background: rgba(255, 107, 107, .1);
+  }
+
+  .chip.down {
+    color: #a5d8ff;
+    border-color: rgba(77, 171, 247, .4);
+    background: rgba(77, 171, 247, .1);
+  }
+
+  .chip .fz { opacity: .65; font-size: 11px; }
+
+  .chip.neu {
+    color: var(--text);
+    border-color: var(--line);
+    background: var(--panel-2);
+  }
+
+  /* ---------- 대표 문장 ---------- */
+
+  details { margin-top: 14px; }
+
+  summary {
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--muted);
+    user-select: none;
+  }
+
+  summary:hover { color: var(--text); }
+
+  .sent {
+    background: var(--panel-2);
+    border-radius: 10px;
+    padding: 10px 12px;
+    margin-top: 8px;
+    font-size: 13px;
+  }
+
+  .sent .s {
+    font-size: 12px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sent .t { margin-top: 3px; word-break: break-word; }
+
+  footer {
+    margin-top: 36px;
+    text-align: center;
+    font-size: 12px;
+    color: var(--muted);
+  }
+
+  footer a { color: var(--muted); }
+
+  /* ---------- 구분선 ---------- */
+
+  .divider {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 32px 0;
+    color: var(--muted);
+    font-size: 12px;
+  }
+
+  .divider::before,
+  .divider::after {
+    content: "";
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+  }
+
+  /* ---------- 문장 하나 판독 ---------- */
+
+  #quick .section-label { margin-top: 0; }
+
+  #sentenceInput {
+    width: 100%;
+    min-height: 76px;
+    resize: vertical;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 12px 14px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  #sentenceInput:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  #sentenceBtn {
+    margin-top: 10px;
+    padding: 10px 18px;
+    border: none;
+    border-radius: 10px;
+    background: var(--accent);
+    color: #0f1115;
+    font-weight: 700;
+    font-size: 13px;
+    cursor: pointer;
+  }
+
+  #sentenceBtn:disabled {
+    opacity: .5;
+    cursor: default;
+  }
+
+  #sentenceStatus {
+    margin-top: 10px;
+    font-size: 13px;
+    color: var(--muted);
+    min-height: 18px;
+  }
+
+  #sentenceStatus.error {
+    color: #ffa8a8;
+    background: rgba(255, 107, 107, .08);
+    border: 1px solid rgba(255, 107, 107, .25);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>FORTY-SCAN</h1>
+    <p class="sub">카카오톡 대화를 넣으면 참여자별 영포티 지수를 판독합니다</p>
+  </header>
+
+  <div id="drop">
+    <div class="big">카카오톡 TXT 파일을 여기에 끌어다 놓으세요</div>
+    <div class="hint">또는 클릭해서 파일 선택 · 카카오톡 &gt; 대화 내보내기 &gt; 텍스트만</div>
+    <div id="filename"></div>
+  </div>
+
+  <input type="file" id="picker" accept=".txt,text/plain" hidden>
+
+  <div id="status"></div>
+
+  <div id="summary"></div>
+  <div id="results"></div>
+
+  <div class="divider">또는</div>
+
+  <div id="quick">
+    <div class="section-label">문장 하나만 빠르게 판독하기</div>
+    <textarea id="sentenceInput" placeholder="문장을 입력하세요… 예) 야 이거 레알 오지구요 지리구요"></textarea>
+    <div>
+      <button id="sentenceBtn">판독하기</button>
+    </div>
+    <div id="sentenceStatus"></div>
+    <div id="sentenceResult"></div>
+  </div>
+
+  <footer>
+    분석에 쓰인 문장별 점수의 산술평균이 최종 영포티 지수입니다 ·
+    <a href="/docs" target="_blank">API 문서</a>
+  </footer>
+
+</div>
+
+<script>
+const drop     = document.getElementById("drop");
+const picker   = document.getElementById("picker");
+const statusEl = document.getElementById("status");
+const summary  = document.getElementById("summary");
+const results  = document.getElementById("results");
+const filename = document.getElementById("filename");
+
+let busy = false;
+
+/* ---------------- 등급 구간 색 ---------------- */
+/* forty_scan_features.py 의 GRADES 임계값(20/40/60/80)과 맞춥니다. */
+
+function gradeColor(score) {
+  if (score < 20) return "#51cf66";
+  if (score < 40) return "#94d82d";
+  if (score < 60) return "#fcc419";
+  if (score < 80) return "#ff922b";
+  return "#ff6b6b";
+}
+
+/* 화자 카드 색.
+
+   문장이 너무 적어 판정을 보류한 화자(is_provisional)는
+   등급 색 대신 회색을 씁니다.
+   초록/빨강이 붙으면 판정이 난 것처럼 읽히기 때문입니다.
+
+   문장 하나짜리 판독에는 쓰지 않습니다. 그건 표본 개념이 없습니다. */
+
+function speakerColor(r) {
+  if (r.is_provisional) return "#868e96";
+  return gradeColor(r.final_score);
+}
+
+/* ---------------- 드래그앤드롭 ---------------- */
+
+/* dragover 에서 preventDefault 를 하지 않으면
+   브라우저가 파일을 그냥 열어버립니다. */
+
+["dragenter", "dragover"].forEach(function (name) {
+  drop.addEventListener(name, function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    drop.classList.add("hot");
+  });
+});
+
+["dragleave", "drop"].forEach(function (name) {
+  drop.addEventListener(name, function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    drop.classList.remove("hot");
+  });
+});
+
+drop.addEventListener("drop", function (e) {
+  const file = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (file) send(file);
+});
+
+/* 페이지 바깥에 떨어뜨렸을 때도 브라우저가 파일을 열지 않도록 */
+["dragover", "drop"].forEach(function (name) {
+  window.addEventListener(name, function (e) {
+    if (!drop.contains(e.target)) e.preventDefault();
+  });
+});
+
+drop.addEventListener("click", function () {
+  if (!busy) picker.click();
+});
+
+picker.addEventListener("change", function () {
+  const file = picker.files && picker.files[0];
+  if (file) send(file);
+  picker.value = "";   /* 같은 파일을 다시 골라도 change 가 걸리도록 */
+});
+
+/* ---------------- 전송 ---------------- */
+
+async function send(file) {
+  if (busy) return;
+  busy = true;
+
+  filename.textContent = file.name;
+  summary.textContent  = "";
+  results.innerHTML    = "";
+
+  statusEl.className   = "";
+  statusEl.textContent = "분석 중입니다…";
+
+  const fd = new FormData();
+  fd.append("file", file);
+
+  try {
+    const res = await fetch("/analyze-all", { method: "POST", body: fd });
+
+    let data = null;
+    try { data = await res.json(); } catch (_) { data = null; }
+
+    if (!res.ok) {
+      showError(readDetail(data, res.status));
+      return;
+    }
+
+    render(data);
+    statusEl.className   = "";
+    statusEl.textContent = "";
+
+  } catch (err) {
+    showError("서버에 연결하지 못했습니다. (" + err.message + ")");
+  } finally {
+    busy = false;
+  }
+}
+
+/* FastAPI HTTPException 의 detail 은 문자열일 수도, 객체일 수도 있습니다. */
+function readDetail(data, code) {
+  if (!data || data.detail === undefined) return "요청에 실패했습니다. (HTTP " + code + ")";
+  const d = data.detail;
+  if (typeof d === "string") return d;
+  if (d && typeof d === "object" && typeof d.message === "string") return d.message;
+  return JSON.stringify(d);
+}
+
+function showError(message) {
+  statusEl.className   = "error";
+  statusEl.textContent = message;
+}
+
+/* ---------------- 렌더링 ---------------- */
+
+function render(data) {
+  summary.textContent =
+    data.filename + " · 전체 " + data.message_count + "개 메시지 · 참여자 " +
+    data.results.length + "명";
+
+  results.innerHTML = "";
+
+  data.results.forEach(function (r, i) {
+    results.appendChild(card(r, i + 1));
+  });
+}
+
+function card(r, rank) {
+  const color = speakerColor(r);
+
+  const el = document.createElement("div");
+  el.className = "card";
+
+  /* --- 상단: 이름 / 등급 / 점수 --- */
+
+  const top = document.createElement("div");
+  top.className = "card-top";
+
+  const rankEl = document.createElement("span");
+  rankEl.className = "rank";
+  rankEl.textContent = "#" + rank;
+
+  const nameEl = document.createElement("span");
+  nameEl.className = "speaker";
+  nameEl.textContent = r.speaker;
+
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.style.background = color;
+  badge.textContent = r.final_grade;
+
+  const scoreEl = document.createElement("span");
+  scoreEl.className = "score";
+  scoreEl.style.color = color;
+  scoreEl.textContent = r.final_score.toFixed(1);
+
+  top.append(rankEl, nameEl, badge, scoreEl);
+  el.appendChild(top);
+
+  /* --- 등급 코멘트 --- */
+
+  const comment = document.createElement("div");
+  comment.className = "comment";
+  comment.textContent = r.final_comment;
+  el.appendChild(comment);
+
+  /* --- 점수 막대 --- */
+
+  const bar = document.createElement("div");
+  bar.className = "bar";
+
+  const fill = document.createElement("i");
+  fill.style.width = Math.max(0, Math.min(100, r.final_score)) + "%";
+  fill.style.background = color;
+
+  /* 판정 보류면 막대를 흐리게 해서 잠정값임을 드러냅니다. */
+  if (r.is_provisional) {
+    fill.style.opacity = "0.45";
+  }
+
+  bar.appendChild(fill);
+  el.appendChild(bar);
+
+  /* --- 메시지 수 / 표본 경고 --- */
+
+  /* 신뢰도는 백엔드가 계산합니다. n / (n + PRIOR_MESSAGE_COUNT)
+     여기서 임계값을 다시 하드코딩하지 않습니다. */
+
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent =
+    "분석 문장 " + r.message_count + "개 · 신뢰도 " +
+    Math.round(r.reliability * 100) + "%";
+
+  if (r.is_provisional) {
+    const warn = document.createElement("span");
+    warn.className = "warn";
+    warn.textContent = " · 표본이 부족해 판정을 보류했습니다";
+    meta.appendChild(warn);
+  }
+
+  el.appendChild(meta);
+
+  /* --- 근거 칩 --- */
+
+  if (r.top_features.length) {
+    const label = document.createElement("div");
+    label.className = "section-label";
+    label.textContent = "근거 (빨강 = 지수를 올린 특징 · 파랑 = 내린 특징)";
+    el.appendChild(label);
+
+    const chips = document.createElement("div");
+    chips.className = "chips";
+
+    r.top_features.forEach(function (f) {
+      const chip = document.createElement("span");
+      chip.className = "chip " + (f.coef >= 0 ? "up" : "down");
+      chip.title = "계수 " + f.coef + " · 기여도 " + f.contribution;
+      chip.textContent = f.name + " ×" + f.count;
+
+      if (f.is_fuzzy) {
+        const fz = document.createElement("span");
+        fz.className = "fz";
+        fz.textContent = " (오타보정)";
+        chip.appendChild(fz);
+      }
+
+      chips.appendChild(chip);
+    });
+
+    el.appendChild(chips);
+  }
+
+  /* --- 대표 문장 --- */
+
+  if (r.top_sentences.length) {
+    const details = document.createElement("details");
+
+    const sum = document.createElement("summary");
+    sum.textContent = "영포티 지수가 높았던 문장 " + r.top_sentences.length + "개 보기";
+    details.appendChild(sum);
+
+    r.top_sentences.forEach(function (s) {
+      const box = document.createElement("div");
+      box.className = "sent";
+
+      const head = document.createElement("div");
+      head.className = "s";
+      head.textContent = s.score.toFixed(1) + " · " + s.grade;
+      head.style.color = gradeColor(s.score);
+
+      const body = document.createElement("div");
+      body.className = "t";
+      body.textContent = s.text;
+
+      box.append(head, body);
+      details.appendChild(box);
+    });
+
+    el.appendChild(details);
+  }
+
+  return el;
+}
+
+/* ---------------- 문장 하나 판독 ---------------- */
+
+const sentenceInput  = document.getElementById("sentenceInput");
+const sentenceBtn    = document.getElementById("sentenceBtn");
+const sentenceStatus = document.getElementById("sentenceStatus");
+const sentenceResult = document.getElementById("sentenceResult");
+
+let sentenceBusy = false;
+
+sentenceBtn.addEventListener("click", sendSentence);
+
+/* Enter 로 바로 판독, Shift+Enter 는 줄바꿈 */
+sentenceInput.addEventListener("keydown", function (e) {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendSentence();
+  }
+});
+
+async function sendSentence() {
+  if (sentenceBusy) return;
+
+  const text = sentenceInput.value.trim();
+
+  sentenceStatus.className = "";
+
+  if (!text) {
+    sentenceStatus.className   = "error";
+    sentenceStatus.textContent = "문장을 입력해 주세요.";
+    return;
+  }
+
+  sentenceBusy = true;
+  sentenceBtn.disabled = true;
+  sentenceResult.innerHTML = "";
+  sentenceStatus.textContent = "판독 중입니다…";
+
+  try {
+    const res = await fetch("/analyze-sentence", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text })
+    });
+
+    let data = null;
+    try { data = await res.json(); } catch (_) { data = null; }
+
+    if (!res.ok) {
+      sentenceStatus.className   = "error";
+      sentenceStatus.textContent = readDetail(data, res.status);
+      return;
+    }
+
+    sentenceStatus.textContent = "";
+    sentenceResult.appendChild(sentenceCard(data));
+
+  } catch (err) {
+    sentenceStatus.className   = "error";
+    sentenceStatus.textContent = "서버에 연결하지 못했습니다. (" + err.message + ")";
+  } finally {
+    sentenceBusy = false;
+    sentenceBtn.disabled = false;
+  }
+}
+
+/* /analyze-sentence 응답 형태 (analyze_sentence() 그대로):
+   { text, score, grade, grade_comment, detected_features, vector } */
+
+function sentenceCard(r) {
+  const color = gradeColor(r.score);
+
+  const el = document.createElement("div");
+  el.className = "card";
+
+  const top = document.createElement("div");
+  top.className = "card-top";
+
+  const badge = document.createElement("span");
+  badge.className = "badge";
+  badge.style.background = color;
+  badge.textContent = r.grade;
+
+  const scoreEl = document.createElement("span");
+  scoreEl.className = "score";
+  scoreEl.style.color = color;
+  scoreEl.textContent = r.score.toFixed(1);
+
+  top.append(badge, scoreEl);
+  el.appendChild(top);
+
+  const comment = document.createElement("div");
+  comment.className = "comment";
+  comment.textContent = r.grade_comment;
+  el.appendChild(comment);
+
+  const bar = document.createElement("div");
+  bar.className = "bar";
+
+  const fill = document.createElement("i");
+  fill.style.width = Math.max(0, Math.min(100, r.score)) + "%";
+  fill.style.background = color;
+
+  bar.appendChild(fill);
+  el.appendChild(bar);
+
+  if (r.detected_features.length) {
+    const label = document.createElement("div");
+    label.className = "section-label";
+    label.textContent = "검출된 특징";
+    el.appendChild(label);
+
+    const chips = document.createElement("div");
+    chips.className = "chips";
+
+    r.detected_features.forEach(function (f) {
+      const chip = document.createElement("span");
+      chip.className = "chip neu";
+      chip.textContent = f.name + " ×" + f.count;
+
+      if (f.is_fuzzy) {
+        const fz = document.createElement("span");
+        fz.className = "fz";
+        fz.textContent = " (오타보정)";
+        chip.appendChild(fz);
+      }
+
+      chips.appendChild(chip);
+    });
+
+    el.appendChild(chips);
+  } else {
+    const none = document.createElement("div");
+    none.className = "meta";
+    none.style.marginTop = "12px";
+    none.textContent = "사전에 등록된 특징이 검출되지 않았습니다.";
+    el.appendChild(none);
+  }
+
+  return el;
+}
+</script>
+</body>
+</html>
