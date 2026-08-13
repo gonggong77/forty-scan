@@ -2492,12 +2492,13 @@ function shareFacebook(target) {
    그래서 12번 섹션의 이미지 저장 경로로 넘깁니다.
    저장된 카드를 사용자가 스토리에 올리면 됩니다.
 
-   여기서는 "download" 가 아니라 "share" 모드로 넘겨서
-   PC 에서도 다운로드 대신 공유 시트가 먼저 뜨도록 합니다. */
+   "이미지로 저장" 버튼과 똑같이 "download" 모드로 넘겨서
+   다운로드 폴더에 바로 파일이 남도록 합니다
+   (iOS Safari 처럼 <a download> 가 안 먹히는 환경은 그대로 공유 시트로 폴백). */
 
 function shareImage(kind) {
   closeShare();
-  runSave(kind, "share");
+  runSave(kind, "download");
 }
 
 /* ---------------- 버튼 연결 ---------------- */
