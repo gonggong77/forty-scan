@@ -878,7 +878,7 @@ button:disabled { cursor: default; opacity: .5; }
     </div>
 
     <div class="btn-row">
-      <button class="pill-btn ghost" type="button" data-soon="이미지로 저장">이미지로 저장</button>
+      <button class="pill-btn ghost" type="button" id="s-save">이미지로 저장</button>
       <button class="pill-btn ghost" type="button" data-go="sentence">다시 판독</button>
     </div>
   </section>
@@ -911,7 +911,7 @@ button:disabled { cursor: default; opacity: .5; }
     </details>
 
     <div class="btn-row">
-      <button class="pill-btn ghost" type="button" data-soon="이미지로 저장">이미지로 저장</button>
+      <button class="pill-btn ghost" type="button" id="p-save">이미지로 저장</button>
       <button class="pill-btn ghost" type="button" id="p-share">공유하기</button>
     </div>
   </section>
@@ -933,7 +933,7 @@ button:disabled { cursor: default; opacity: .5; }
     <div class="sub-min" id="a-summary"></div>
 
     <div class="btn-row">
-      <button class="pill-btn ghost" type="button" data-soon="이미지로 저장">이미지로 저장</button>
+      <button class="pill-btn ghost" type="button" id="a-save">이미지로 저장</button>
       <button class="pill-btn ghost" type="button" id="a-share">공유하기</button>
     </div>
   </section>
@@ -1123,8 +1123,9 @@ document.addEventListener("click", function (e) {
 /* ==========================================================
    3. 준비중 토스트
 
-   아직 만들지 않은 기능(이미지 저장 / SNS 공유 / 개인정보 안내)은
+   아직 만들지 않은 기능(SNS 공유 / 개인정보 안내)은
    눌리기는 하되 안내만 띄웁니다.
+   이미지 저장은 12번 섹션에서 실제로 동작합니다.
    ========================================================== */
 
 const toastEl = document.getElementById("toast");
@@ -1754,6 +1755,463 @@ function celebrate(score) {
 
   setTimeout(function () { confettiBox.innerHTML = ""; }, 3600);
 }
+
+/* ==========================================================
+   12. 결과 이미지 저장
+
+   화면을 그대로 캡처하지 않고 1080x1350 세로 카드를
+   <canvas> 에 코드로 직접 그려서 PNG 로 저장합니다.
+
+   화면 캡처(html2canvas 등) 대신 이 방식을 고른 이유:
+   - 결과 화면엔 인라인 SVG 게이지, 구글 웹폰트, CSS 그라디언트,
+     진행 중인 트랜지션/애니메이션이 섞여 있어 캡처 결과가 들쭉날쭉합니다.
+   - 버튼/아코디언까지 같이 찍히는 것도 공유용으로는 맞지 않습니다.
+   - 외부 라이브러리를 하나도 늘리지 않아도 됩니다.
+   ========================================================== */
+
+const CARD_W = 1080;
+const CARD_H = 1350;
+
+/* CSS :root 변수(29~45행)와 값을 맞춘 리터럴입니다.
+   canvas 는 CSS 변수를 못 읽어서 여기 따로 둡니다. */
+
+const CARD_COLOR = {
+  cream: "#FAFAF0",
+  line: "#ecdfc0",
+  green: "#158F69",
+  yellow: "#FEC926",
+  ink: "#3d3627",
+  muted: "#a89a7a",
+  track: "#dcece4",
+  gray: "#b3ab97"
+};
+
+let savingBusy = false;
+
+/* ---------------- 공통 유틸 ---------------- */
+
+function loadImage(src) {
+  return new Promise(function (resolve, reject) {
+    const img = new Image();
+    img.onload = function () { resolve(img); };
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+/* 구글 폰트가 아직 안 왔으면 최대 1.5초만 기다립니다.
+   CDN 이 막혀 있거나 오프라인이면 폴백 폰트로 조용히 그립니다. */
+
+function ensureFont() {
+  if (!(window.FontFace && document.fonts && document.fonts.load)) {
+    return Promise.resolve();
+  }
+  const wait = document.fonts.load('400 96px "Black Han Sans"').catch(function () {});
+  const timeout = new Promise(function (r) { setTimeout(r, 1500); });
+  return Promise.race([wait, timeout]);
+}
+
+const CARD_FONT_HEAD = '"Black Han Sans", "Malgun Gothic", sans-serif';
+const CARD_FONT_BODY = '"Pretendard", "Malgun Gothic", sans-serif';
+
+/* 한국어는 띄어쓰기 단위로만 자르면 한 단어가 카드 폭을 넘기는 경우가 있어서
+   공백 우선으로 자르고, 그래도 넘치면 글자 단위로도 자릅니다. */
+
+function wrapText(ctx, text, maxWidth) {
+  const words = String(text).split(/\s+/).filter(Boolean);
+  const lines = [];
+  let line = "";
+
+  function pushChar(ch) {
+    if (ctx.measureText(line + ch).width <= maxWidth || !line) {
+      line += ch;
+    } else {
+      lines.push(line);
+      line = ch;
+    }
+  }
+
+  words.forEach(function (word, i) {
+    const candidate = line ? line + " " + word : word;
+    if (ctx.measureText(candidate).width <= maxWidth) {
+      line = candidate;
+    } else {
+      if (line) lines.push(line);
+      line = "";
+      if (ctx.measureText(word).width <= maxWidth) {
+        line = word;
+      } else {
+        for (const ch of word) pushChar(ch);
+      }
+    }
+  });
+
+  if (line) lines.push(line);
+  return lines;
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  if (ctx.roundRect) {
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, r);
+    return;
+  }
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/* 결과 화면의 반원 게이지(856~860행)를 canvas 로 다시 그립니다. */
+
+function drawArcGauge(ctx, cx, cy, r, score, color) {
+  const start = Math.PI;
+  const end = 0;
+  const ratio = Math.max(0, Math.min(100, score)) / 100;
+  const mid = start + (end - start) * ratio;
+
+  ctx.lineCap = "round";
+  ctx.lineWidth = r * 0.2;
+
+  ctx.strokeStyle = CARD_COLOR.track;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, start, end, true);
+  ctx.stroke();
+
+  if (ratio > 0) {
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, start, mid, true);
+    ctx.stroke();
+  }
+}
+
+/* 세 카드가 공유하는 틀: 배경 / 테두리 / 상단 로고 / 하단 푸터.
+   틀을 먼저 그리고 각 렌더러가 그 위에 내용을 채웁니다. */
+
+async function drawCardShell(ctx) {
+  ctx.fillStyle = CARD_COLOR.cream;
+  ctx.fillRect(0, 0, CARD_W, CARD_H);
+
+  roundRect(ctx, 12, 12, CARD_W - 24, CARD_H - 24, 40);
+  ctx.strokeStyle = CARD_COLOR.line;
+  ctx.lineWidth = 3;
+  ctx.stroke();
+
+  try {
+    const icon = await loadImage("img/icon.png");
+    ctx.save();
+    roundRect(ctx, 64, 64, 64, 64, 16);
+    ctx.clip();
+    ctx.drawImage(icon, 64, 64, 64, 64);
+    ctx.restore();
+  } catch (e) { /* 로고가 없어도 카드는 계속 그립니다 */ }
+
+  ctx.fillStyle = CARD_COLOR.ink;
+  ctx.font = "600 32px " + CARD_FONT_BODY;
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  ctx.fillText("영포티 판독기", 148, 96);
+
+  ctx.fillStyle = CARD_COLOR.muted;
+  ctx.font = "400 26px " + CARD_FONT_BODY;
+  ctx.textAlign = "center";
+  ctx.fillText("FORTY-SCAN · forty-scan.app", CARD_W / 2, CARD_H - 70);
+}
+
+/* 스테이지(글로우 + 캐릭터)를 그립니다. cy 는 캐릭터 중심 y, size 는 캐릭터 한 변 길이. */
+
+async function drawStage(ctx, cx, cy, size, score) {
+  const glow = ctx.createRadialGradient(cx, cy, size * 0.1, cx, cy, size * 0.7);
+  glow.addColorStop(0, "rgba(21,143,105,0.16)");
+  glow.addColorStop(1, "rgba(21,143,105,0)");
+  ctx.fillStyle = glow;
+  ctx.beginPath();
+  ctx.arc(cx, cy, size * 0.7, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "rgba(61,54,39,0.08)";
+  ctx.beginPath();
+  ctx.ellipse(cx, cy + size * 0.42, size * 0.32, size * 0.07, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  try {
+    const char = await loadImage(charSrc(score));
+    /* CSS 의 .stage .char 와 같은 규칙: object-fit:contain, object-position:bottom.
+       높이를 size 에 맞추고 원본 비율대로 폭을 정해서 늘어나지 않게 합니다. */
+    const drawH = size;
+    const drawW = drawH * (char.naturalWidth / char.naturalHeight);
+    const bottom = cy + size / 2;
+    ctx.drawImage(char, cx - drawW / 2, bottom - drawH, drawW, drawH);
+  } catch (e) { /* 캐릭터 이미지가 안 오더라도 나머지는 그립니다 */ }
+}
+
+function drawGaugeBlock(ctx, cy, score, color) {
+  const cx = CARD_W / 2;
+  const r = 240;
+
+  drawArcGauge(ctx, cx, cy, r, score, color);
+
+  ctx.fillStyle = color;
+  ctx.font = "400 120px " + CARD_FONT_HEAD;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(String(Math.round(score)), cx, cy - 20);
+}
+
+function drawFeatureChips(ctx, y, features) {
+  if (!features || !features.length) return y;
+
+  const top = features.slice(0, 3);
+  ctx.font = "500 26px " + CARD_FONT_BODY;
+
+  const gap = 16;
+  const padX = 22;
+  const widths = top.map(function (f) {
+    return ctx.measureText(f.name.replace(/_/g, " ") + " ×" + f.count).width + padX * 2;
+  });
+  const total = widths.reduce(function (a, b) { return a + b; }, 0) + gap * (top.length - 1);
+
+  let x = CARD_W / 2 - total / 2;
+
+  top.forEach(function (f, i) {
+    const w = widths[i];
+    const label = f.name.replace(/_/g, " ") + " ×" + f.count;
+
+    ctx.fillStyle = "rgba(21,143,105,0.09)";
+    roundRect(ctx, x, y, w, 56, 28);
+    ctx.fill();
+
+    ctx.fillStyle = CARD_COLOR.green;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, x + w / 2, y + 29);
+
+    x += w + gap;
+  });
+
+  return y + 56;
+}
+
+/* ---------------- 카드 렌더러 3종 ---------------- */
+
+async function makeSentenceCard(r) {
+  const canvas = document.createElement("canvas");
+  canvas.width = CARD_W;
+  canvas.height = CARD_H;
+  const ctx = canvas.getContext("2d");
+
+  await drawCardShell(ctx);
+  await drawStage(ctx, CARD_W / 2, 380, 380, r.score);
+
+  drawGaugeBlock(ctx, 760, r.score, CARD_COLOR.green);
+
+  ctx.fillStyle = CARD_COLOR.ink;
+  ctx.font = "400 52px " + CARD_FONT_HEAD;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText(r.grade, CARD_W / 2, 850);
+
+  ctx.fillStyle = CARD_COLOR.muted;
+  ctx.font = "400 30px " + CARD_FONT_BODY;
+  const commentLines = wrapText(ctx, r.grade_comment || "", CARD_W - 200);
+  commentLines.slice(0, 2).forEach(function (line, i) {
+    ctx.fillText(line, CARD_W / 2, 900 + i * 42);
+  });
+
+  drawFeatureChips(ctx, 1010, r.detected_features);
+
+  return canvas;
+}
+
+async function makeSpeakerCard(r) {
+  const canvas = document.createElement("canvas");
+  canvas.width = CARD_W;
+  canvas.height = CARD_H;
+  const ctx = canvas.getContext("2d");
+
+  const color = r.is_provisional ? CARD_COLOR.gray : CARD_COLOR.green;
+
+  await drawCardShell(ctx);
+  await drawStage(ctx, CARD_W / 2, 360, 360, r.final_score);
+
+  ctx.fillStyle = CARD_COLOR.ink;
+  ctx.font = "500 34px " + CARD_FONT_BODY;
+  ctx.textAlign = "center";
+  ctx.fillText(r.speaker, CARD_W / 2, 570);
+
+  drawGaugeBlock(ctx, 740, r.final_score, color);
+
+  ctx.fillStyle = CARD_COLOR.ink;
+  ctx.font = "400 52px " + CARD_FONT_HEAD;
+  ctx.fillText(r.final_grade, CARD_W / 2, 830);
+
+  ctx.fillStyle = CARD_COLOR.muted;
+  ctx.font = "400 30px " + CARD_FONT_BODY;
+  const commentLines = wrapText(ctx, r.final_comment || "", CARD_W - 200);
+  commentLines.slice(0, 2).forEach(function (line, i) {
+    ctx.fillText(line, CARD_W / 2, 880 + i * 42);
+  });
+
+  const metaY = 960 + Math.max(0, commentLines.length - 1) * 42;
+  ctx.font = "400 26px " + CARD_FONT_BODY;
+  ctx.fillStyle = color;
+
+  if (r.is_provisional) {
+    ctx.fillText("표본 부족 · 판정 보류 · 메시지 " + r.message_count + "개", CARD_W / 2, metaY);
+  } else {
+    ctx.fillText("메시지 " + r.message_count + "개 · 신뢰도 " + Math.round(r.reliability * 100) + "%", CARD_W / 2, metaY);
+  }
+
+  return canvas;
+}
+
+async function makeRankCard(all) {
+  const canvas = document.createElement("canvas");
+  canvas.width = CARD_W;
+  canvas.height = CARD_H;
+  const ctx = canvas.getContext("2d");
+
+  const results = all.results;
+  const top = results[0];
+  const MEDALS = ["🥇", "🥈", "🥉"];
+
+  await drawCardShell(ctx);
+  await drawStage(ctx, CARD_W / 2, 430, 640, top.final_score);
+
+  ctx.fillStyle = CARD_COLOR.ink;
+  ctx.font = "500 34px " + CARD_FONT_BODY;
+  ctx.textAlign = "center";
+  ctx.fillText("1위 · " + top.speaker, CARD_W / 2, 800);
+
+  ctx.font = "400 26px " + CARD_FONT_BODY;
+  ctx.fillStyle = CARD_COLOR.muted;
+  ctx.fillText("우리 방 순위", CARD_W / 2, 840);
+
+  const listTop = 910;
+  const rowH = 105;
+  const shown = results.slice(0, 3);
+  const listX = 90;
+  const listW = CARD_W - listX * 2;
+
+  shown.forEach(function (r, i) {
+    const y = listTop + i * rowH;
+    const provisional = !!r.is_provisional;
+
+    ctx.font = "34px " + CARD_FONT_BODY;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(MEDALS[i], listX, y + rowH / 2);
+
+    ctx.fillStyle = CARD_COLOR.ink;
+    ctx.font = "500 32px " + CARD_FONT_BODY;
+    ctx.fillText(r.speaker, listX + 68, y + rowH / 2);
+
+    const barX = listX + 320;
+    const barW = listW - 320 - 90;
+    const barH = 18;
+    const barY = y + rowH / 2 - barH / 2;
+
+    ctx.fillStyle = CARD_COLOR.track;
+    roundRect(ctx, barX, barY, barW, barH, barH / 2);
+    ctx.fill();
+
+    const pct = Math.max(2, Math.min(100, r.final_score)) / 100;
+    if (provisional) {
+      ctx.fillStyle = CARD_COLOR.gray;
+    } else {
+      const grad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+      grad.addColorStop(0, CARD_COLOR.yellow);
+      grad.addColorStop(1, CARD_COLOR.green);
+      ctx.fillStyle = grad;
+    }
+    roundRect(ctx, barX, barY, barW * pct, barH, barH / 2);
+    ctx.fill();
+
+    ctx.fillStyle = provisional ? CARD_COLOR.gray : CARD_COLOR.ink;
+    ctx.font = "500 30px " + CARD_FONT_BODY;
+    ctx.textAlign = "right";
+    ctx.fillText(String(Math.round(r.final_score)), listX + listW, y + rowH / 2);
+  });
+
+  if (results.length > shown.length) {
+    ctx.fillStyle = CARD_COLOR.muted;
+    ctx.font = "400 26px " + CARD_FONT_BODY;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText("외 " + (results.length - shown.length) + "명", CARD_W / 2, listTop + shown.length * rowH + 35);
+  }
+
+  return canvas;
+}
+
+/* ---------------- 저장 파이프라인 ---------------- */
+
+/* 1순위: OS 공유 시트. 사진 앱 저장이나 카톡 전송으로 바로 이어질 수 있고,
+   iOS Safari 처럼 <a download> 가 제대로 안 먹히는 환경에서도 확실히 동작합니다.
+   지원하지 않거나 실패하면 다운로드로 폴백합니다. */
+
+async function saveCard(makeFn, arg, slug) {
+  if (savingBusy) return;
+  savingBusy = true;
+  toast("이미지를 만들고 있어요…");
+
+  try {
+    await ensureFont();
+    const canvas = await makeFn(arg);
+    const blob = await new Promise(function (resolve) {
+      canvas.toBlob(resolve, "image/png");
+    });
+    if (!blob) throw new Error("blob 생성 실패");
+
+    const filename = "forty-scan-" + slug + ".png";
+    const file = new File([blob], filename, { type: "image/png" });
+
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: "영포티 판독기" });
+        return;
+      } catch (err) {
+        if (err && err.name === "AbortError") return; /* 사용자가 공유를 취소했습니다 */
+        /* 공유가 실패하면 아래 다운로드로 넘어갑니다 */
+      }
+    }
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+
+    toast("이미지를 저장했어요 📸");
+
+  } catch (err) {
+    toast("이미지를 만들지 못했습니다 😢");
+  } finally {
+    savingBusy = false;
+  }
+}
+
+document.getElementById("s-save").addEventListener("click", function () {
+  if (!state.sentence) { toast("판독 결과가 없습니다."); return; }
+  saveCard(makeSentenceCard, state.sentence, "sentence-" + Math.round(state.sentence.score));
+});
+
+document.getElementById("p-save").addEventListener("click", function () {
+  if (!state.speaker) { toast("판독 결과가 없습니다."); return; }
+  saveCard(makeSpeakerCard, state.speaker, "speaker-" + Math.round(state.speaker.final_score));
+});
+
+document.getElementById("a-save").addEventListener("click", function () {
+  if (!state.all) { toast("판독 결과가 없습니다."); return; }
+  saveCard(makeRankCard, state.all, "rank");
+});
 </script>
 
 </body>
