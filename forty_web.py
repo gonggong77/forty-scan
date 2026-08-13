@@ -35,10 +35,13 @@
 # 0. 라이브러리
 # ==========================================================
 
+import html
+import json
 import os
 import re
 
-from fastapi import File, HTTPException, UploadFile
+from fastapi import File, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 # 기존 백엔드를 그대로 재사용합니다.
@@ -59,7 +62,7 @@ from forty_backend import (
     get_speakers,
 )
 
-from forty_scan_features import FEATURE_NAMES
+from forty_scan_features import FEATURE_NAMES, GRADES, get_grade
 
 
 # ==========================================================
@@ -112,6 +115,72 @@ TOP_FEATURE_COUNT = 6
 
 # 화자 카드 하나에 보여줄 대표 문장 개수
 TOP_SENTENCE_COUNT = 3
+
+
+# ==========================================================
+# 1-1. 공유 설정 (환경변수)
+#
+# 이 저장소에서 os.environ 을 읽는 곳은 여기뿐입니다.
+# 둘 다 없어도 서버는 정상 동작합니다.
+#
+#   KAKAO_JS_KEY     : 카카오 JavaScript 키.
+#                      비어 있으면 화면의 카카오 버튼이
+#                      자동으로 "링크 복사" 로 대체됩니다.
+#
+#   PUBLIC_BASE_URL  : "https://example.com" 형태의 절대 주소.
+#                      보통은 비워 둡니다. 요청 헤더로 알아냅니다.
+#                      나중에 커스텀 도메인을 붙이거나
+#                      리버스 프록시가 한 겹 더 끼면 그때 씁니다.
+# ==========================================================
+
+KAKAO_JS_KEY = (os.environ.get("KAKAO_JS_KEY") or "").strip()
+
+PUBLIC_BASE_URL = (os.environ.get("PUBLIC_BASE_URL") or "").strip().rstrip("/")
+
+# Host 헤더는 클라이언트가 마음대로 보낼 수 있습니다.
+# og:url / og:image 에 그대로 박히므로 형식을 먼저 확인합니다.
+HOST_PATTERN = re.compile(r"^[A-Za-z0-9.\-]{1,253}(?::\d{1,5})?$")
+
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0")
+
+
+def base_url(request):
+    """
+    og:image / og:url 에 쓸 절대 주소를 만듭니다.
+
+    Cloud Run 은 TLS 를 프록시에서 끊고 컨테이너에는 평문 HTTP 로 넘깁니다.
+    그래서 request.url.scheme 이 "http" 로 나옵니다.
+    그대로 쓰면 카카오/페이스북이 http:// og:image 를 받게 됩니다.
+
+      1. PUBLIC_BASE_URL 이 있으면 그것.
+      2. X-Forwarded-Host / Host + X-Forwarded-Proto.
+      3. 프로토콜 헤더가 없으면 localhost 만 http, 나머지는 https.
+    """
+
+    if PUBLIC_BASE_URL:
+        return PUBLIC_BASE_URL
+
+    host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or ""
+    )
+
+    # 프록시가 여러 겹이면 "a, b" 로 옵니다. 맨 앞이 원래 호스트입니다.
+    host = host.split(",")[0].strip()
+
+    if not HOST_PATTERN.match(host):
+        # 헤더를 믿을 수 없으면 스타렛이 계산한 값으로 물러섭니다.
+        return str(request.base_url).rstrip("/")
+
+    proto = (
+        request.headers.get("x-forwarded-proto") or ""
+    ).split(",")[0].strip().lower()
+
+    if proto not in ("http", "https"):
+        proto = "http" if host.split(":")[0] in LOCAL_HOSTS else "https"
+
+    return proto + "://" + host
 
 
 # ==========================================================
@@ -581,6 +650,238 @@ async def analyze_all(
         "message_count": len(messages),
         "results": results
     }
+
+
+# ==========================================================
+# 6-1. 공유 링크 미리보기  GET /s
+#
+# 카카오톡 / 페이스북에 링크를 붙이면 크롤러가 이 페이지를 긁어
+# og: 태그로 미리보기 카드를 만듭니다. StaticFiles 는 태그를
+# 끼워 넣을 수 없어서 서버가 직접 HTML 을 만듭니다.
+#
+# URL 에 담는 것은 점수와 결과 종류뿐입니다.
+#   화자 이름 / 입력 문장은 절대 담지 않습니다.
+#   등급 이름은 여기서 GRADES 로 다시 계산합니다. (URL 로 받지 않습니다)
+#
+#   /s?t=p&sc=87        화자 1명 결과
+#   /s?t=s&sc=42        문장 결과
+#   /s?t=a&sc=91        전체 순위 1위
+#   /s?t=p&sc=30&p=1    표본 부족 (판정 보류)
+#
+# 파라미터는 사람이 주소창에서 손으로 고칠 수 있습니다.
+# 그래서 int 로 선언하지 않습니다. FastAPI 가 422 JSON 을 뱉으면
+# 공유 링크를 눌러 들어온 사람이 에러 화면을 보게 됩니다.
+# 전부 문자열로 받아서 직접 해석하고, 이상하면 기본 화면으로 넘어갑니다.
+# ==========================================================
+
+SHARE_LEAD = {
+    "s": "이 문장의 영포티 지수",
+    "p": "이 사람의 영포티 지수",
+    "a": "우리 방 1위의 영포티 지수",
+}
+
+
+def parse_share_score(raw):
+    """?sc= 를 0~100 정수로 만듭니다. 못 읽으면 None."""
+
+    try:
+        value = int(round(float(raw)))
+    except (TypeError, ValueError):
+        return None
+
+    return max(0, min(100, value))
+
+
+def grade_step(score):
+    """
+    점수 → 캐릭터 번호 1~5.
+
+    static/index.html 의 gradeStep(약 1013행) 과 같은 구간이어야 합니다.
+    임계값을 옮겨 적지 않고 GRADES 를 그대로 훑습니다.
+    """
+
+    for index, (upper, _name, _comment) in enumerate(GRADES, start=1):
+        if score < upper:
+            return index
+
+    return len(GRADES)
+
+
+SHARE_CSS = """
+:root{--cream:#FAFAF0;--page:#F5EFE0;--green:#158F69;--ink:#3d3627;
+      --muted:#a89a7a;--line:#ecdfc0}
+*{box-sizing:border-box}
+body{margin:0;padding:40px 20px;background:var(--page);color:var(--ink);
+     font-family:"Pretendard","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+     display:flex;align-items:center;justify-content:center;min-height:100vh}
+.card{width:100%;max-width:420px;background:var(--cream);border:1px solid var(--line);
+      border-radius:24px;padding:36px 28px 28px;text-align:center}
+.char{width:190px;height:190px;object-fit:contain;object-position:bottom}
+.score{font-size:64px;font-weight:800;color:var(--green);line-height:1.1;margin:6px 0 2px}
+.score span{font-size:24px;font-weight:700}
+.grade{font-size:22px;font-weight:800;color:var(--green);margin-bottom:8px}
+.lead{font-size:13px;color:var(--muted)}
+.comment{font-size:14px;color:var(--muted);line-height:1.6;margin-bottom:26px}
+.cta{display:block;background:var(--green);color:#fff;text-decoration:none;
+     border-radius:999px;padding:15px 0;font-size:17px;font-weight:800}
+.foot{font-size:11px;color:var(--muted);margin-top:14px}
+"""
+
+
+@app.get("/s", response_class=HTMLResponse)
+def share_preview(request: Request, t: str = "", sc: str = "", p: str = ""):
+
+    base = base_url(request)
+
+    score = parse_share_score(sc)
+
+    kind = t if t in SHARE_LEAD else ""
+
+    # ------------------------------------------------------
+    # 점수가 없거나 이상하면 "그냥 서비스 소개" 로 물러섭니다.
+    # ------------------------------------------------------
+
+    if score is None:
+        step = 3
+        lead = ""
+        grade_name = ""
+        grade_comment = "카카오톡 말투로 알아보는 나의 영포티 지수"
+        score_html = ""
+        og_title = "영포티 판독기 · FORTY-SCAN"
+        canonical = base + "/ui/"
+
+    else:
+        step = grade_step(score)
+        lead = SHARE_LEAD.get(kind, "영포티 지수")
+        canonical = f"{base}/s?t={kind or 'p'}&sc={score}"
+
+        if p == "1":
+            # forty_backend.py 의 표본 부족 처리와 같은 판단입니다.
+            # 문장이 모자라 등급을 보류한 결과에 등급 이름을 붙이면
+            # 앱이 화면에서 하지 않은 단정을 링크가 대신 해버립니다.
+            grade_name = "표본 부족 · 판정 보류"
+            grade_comment = "문장이 적어 판정을 보류한 결과입니다."
+            canonical += "&p=1"
+        else:
+            grade_name, grade_comment = get_grade(score)
+
+        score_html = f'{score}<span>점</span>'
+        og_title = f"영포티 지수 {score}점 · {grade_name} | 영포티 판독기"
+
+    # 지금은 keyart 로 시작하고, 등급별 OG 이미지를 만들면
+    # 아래 한 줄만 /ui/og/og{step}.png 로 바꿉니다.
+    og_image = f"{base}/ui/img/keyart.png"
+
+    og_desc = grade_comment + " 나도 판독해 보기 →"
+
+    esc = html.escape
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{esc(og_title)}</title>
+<meta name="description" content="{esc(og_desc)}">
+<meta name="robots" content="noindex, follow">
+<link rel="canonical" href="{esc(canonical)}">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="영포티 판독기">
+<meta property="og:locale" content="ko_KR">
+<meta property="og:url" content="{esc(canonical)}">
+<meta property="og:title" content="{esc(og_title)}">
+<meta property="og:description" content="{esc(og_desc)}">
+<meta property="og:image" content="{esc(og_image)}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{esc(og_title)}">
+<meta name="twitter:description" content="{esc(og_desc)}">
+<meta name="twitter:image" content="{esc(og_image)}">
+
+<style>{SHARE_CSS}</style>
+</head>
+<body>
+<div class="card">
+  <img class="char" src="/charimg/level{step}.png" alt="">
+  <div class="lead">{esc(lead)}</div>
+  <div class="score">{score_html}</div>
+  <div class="grade">{esc(grade_name)}</div>
+  <div class="comment">{esc(grade_comment)}</div>
+  <a class="cta" href="/ui/">나도 해보기</a>
+  <div class="foot">FORTY-SCAN · 대화는 저장하지 않습니다</div>
+</div>
+</body>
+</html>""", headers={"Cache-Control": "public, max-age=300"})
+
+
+# ==========================================================
+# 6-2. 랜딩 화면  GET /ui/
+#
+# ★ 이 라우트는 반드시 아래 7번 섹션의 app.mount("/ui", ...) 보다
+#   먼저 등록되어야 합니다. FastAPI 는 등록된 순서대로 매칭하고
+#   (starlette.routing.Router.app), Mount 는 "/ui/..." 를 통째로
+#   삼키기 때문에 마운트 뒤에 붙인 라우트는 영원히 호출되지 않습니다.
+#   (에러도 나지 않고 OG 태그만 조용히 사라집니다.)
+#
+# StaticFiles 로는 og 태그와 카카오 키를 끼워 넣을 수 없어서
+# index.html 을 읽어 <!--OG--> 자리에 바꿔치기합니다.
+#
+# 요청마다 파일을 다시 읽습니다.
+#   - 75KB 라 OS 페이지 캐시에서 0.1ms 도 안 걸립니다.
+#   - 시작할 때 한 번만 읽으면 --reload 개발 중에
+#     index.html 을 고쳐도 화면이 안 바뀝니다.
+#     (uvicorn 의 reloader 는 .py 만 감시합니다)
+# ==========================================================
+
+INDEX_PATH = os.path.join(STATIC_DIR, "index.html")
+
+OG_MARKER = "<!--OG-->"
+
+
+def landing_html(request):
+
+    base = base_url(request)
+
+    with open(INDEX_PATH, "r", encoding="utf-8") as handle:
+        page = handle.read()
+
+    block = (
+        '<meta property="og:type" content="website">\n'
+        '<meta property="og:site_name" content="영포티 판독기">\n'
+        '<meta property="og:locale" content="ko_KR">\n'
+        f'<meta property="og:url" content="{base}/ui/">\n'
+        '<meta property="og:title" content="영포티 판독기 · FORTY-SCAN">\n'
+        '<meta property="og:description" content="'
+        '카카오톡 말투로 알아보는 나의 영포티 지수">\n'
+        f'<meta property="og:image" content="{base}/ui/img/keyart.png">\n'
+        '<meta property="og:image:width" content="1200">\n'
+        '<meta property="og:image:height" content="630">\n'
+        '<meta name="twitter:card" content="summary_large_image">\n'
+        # 자바스크립트 키는 원래 공개되는 값입니다.
+        # (도메인으로 잠기기 때문에 유출 위험이 없습니다)
+        # json.dumps 로 감싸서 따옴표가 섞여도 깨지지 않게 합니다.
+        f'<script>window.__KAKAO_KEY__ = {json.dumps(KAKAO_JS_KEY)};</script>\n'
+    )
+
+    if OG_MARKER in page:
+        return page.replace(OG_MARKER, block, 1)
+
+    # 누군가 index.html 에서 표식을 지웠을 때 조용히 실패하지 않도록
+    # <head> 바로 뒤에 넣습니다.
+    return page.replace("<head>", "<head>\n" + block, 1)
+
+
+@app.get("/ui/", response_class=HTMLResponse)
+@app.get("/ui/index.html", response_class=HTMLResponse)
+def landing(request: Request):
+
+    return HTMLResponse(
+        landing_html(request),
+        headers={"Cache-Control": "no-cache"}
+    )
 
 
 # ==========================================================

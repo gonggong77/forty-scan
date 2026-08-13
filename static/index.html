@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>영포티 판독기 · FORTY-SCAN</title>
+<!--OG-->
 
 <!-- 브라우저 탭 아이콘. 파일을 따로 두지 않으려고 SVG 를 그대로 넣었습니다.
      (없으면 /favicon.ico 요청이 404 로 찍힙니다.) -->
@@ -872,9 +873,12 @@ button:disabled { cursor: default; opacity: .5; }
     </details>
 
     <div class="share-icons">
-      <button class="icon-circle kakao" type="button" data-soon="카카오톡 공유">K</button>
-      <button class="icon-circle insta" type="button" data-soon="인스타그램 공유">IG</button>
-      <button class="icon-circle fb" type="button" data-soon="페이스북 공유">F</button>
+      <button class="icon-circle kakao" type="button" aria-label="카카오톡으로 공유"
+              data-share="kakao" data-share-kind="s">K</button>
+      <button class="icon-circle insta" type="button" aria-label="이미지로 저장해 인스타에 올리기"
+              data-share="insta" data-share-kind="s">IG</button>
+      <button class="icon-circle fb" type="button" aria-label="페이스북으로 공유"
+              data-share="fb" data-share-kind="s">F</button>
     </div>
 
     <div class="btn-row">
@@ -960,10 +964,10 @@ button:disabled { cursor: default; opacity: .5; }
     <div class="sheet-handle"></div>
     <div class="headline">결과 공유하기</div>
     <div class="share-icons">
-      <button class="icon-circle kakao" type="button" data-soon="카카오톡 공유">K</button>
-      <button class="icon-circle insta" type="button" data-soon="인스타그램 공유">IG</button>
-      <button class="icon-circle fb" type="button" data-soon="페이스북 공유">F</button>
-      <button class="icon-circle link" type="button" data-soon="링크 복사">🔗</button>
+      <button class="icon-circle kakao" type="button" aria-label="카카오톡으로 공유" data-share="kakao">K</button>
+      <button class="icon-circle insta" type="button" aria-label="이미지로 저장" data-share="insta">IG</button>
+      <button class="icon-circle fb" type="button" aria-label="페이스북으로 공유" data-share="fb">F</button>
+      <button class="icon-circle link" type="button" aria-label="링크 복사" data-share="link">🔗</button>
     </div>
     <button class="tiny-link" type="button" id="share-close">닫기</button>
   </div>
@@ -999,23 +1003,27 @@ const NEEDS_SENTENCE = ["result-sentence"];
    임계값 20 / 40 / 60 / 80 은
    forty_scan_features.py 의 GRADES 와 반드시 같아야 합니다.
 
-     (20,  "진성 MZ")
+     (20,  "완전 청정")
      (40,  "정상 범주")
      (60,  "영포티 경계")
-     (80,  "MZ 코스프레 40대")
-     (101, "확진 영포티")
+     (80,  "영포티 고위험군")
+     (101, "말기 영포티")
 
    등급 이름과 코멘트는 여기서 만들지 않고
    서버 응답(final_grade / final_comment)을 그대로 씁니다.
    캐릭터 이미지를 고르는 데에만 구간을 씁니다.
+
+   /s 공유 미리보기(forty_web.py)도 같은 GRADES 로 등급 이름을
+   다시 계산하므로, 등급 이름은 이제 공개 링크에 노출되는
+   공개 계약이기도 합니다.
    ========================================================== */
 
 function gradeStep(score) {
-  if (score < 20) return 1;   /* 진성 MZ */
+  if (score < 20) return 1;   /* 완전 청정 */
   if (score < 40) return 2;   /* 정상 범주 */
   if (score < 60) return 3;   /* 영포티 경계 */
-  if (score < 80) return 4;   /* MZ 코스프레 40대 */
-  return 5;                   /* 확진 영포티 */
+  if (score < 80) return 4;   /* 영포티 고위험군 */
+  return 5;                   /* 말기 영포티 */
 }
 
 /* charImg 폴더는 static 밖에 있어서 forty_web.py 가 /charimg 로 따로 붙여 둡니다. */
@@ -1063,6 +1071,14 @@ function show(name) {
   if (name === "loading" && !state.busy) name = "landing";
 
   if (!screens[name]) name = "landing";
+
+  /* 모달을 열어 둔 채 뒤로가기를 누르면 모달만 남습니다.
+     shareKind 도 화면과 어긋납니다.
+     shareOverlay 는 아래 4번 섹션에서 const 로 선언되는데
+     show() 는 이미 부팅 시 한 번 불리므로 TDZ 를 피해
+     여기서는 DOM 에서 직접 찾습니다. */
+  const shareOverlayEl = document.getElementById("share-overlay");
+  if (shareOverlayEl) shareOverlayEl.hidden = true;
 
   Object.keys(screens).forEach(function (key) {
     screens[key].classList.toggle("is-active", key === name);
@@ -1123,9 +1139,10 @@ document.addEventListener("click", function (e) {
 /* ==========================================================
    3. 준비중 토스트
 
-   아직 만들지 않은 기능(SNS 공유 / 개인정보 안내)은
+   아직 만들지 않은 기능(개인정보 안내)은
    눌리기는 하되 안내만 띄웁니다.
-   이미지 저장은 12번 섹션에서 실제로 동작합니다.
+   SNS 공유는 13번 섹션, 이미지 저장은 12번 섹션에서
+   실제로 동작합니다.
    ========================================================== */
 
 const toastEl = document.getElementById("toast");
@@ -1148,13 +1165,18 @@ document.addEventListener("click", function (e) {
 /* ==========================================================
    4. 공유 모달 / 바텀시트
 
-   여는 것까지는 시안대로 동작하고,
-   안에 있는 아이콘 4개가 준비중 토스트를 띄웁니다.
+   화자 결과 / 전체 순위 두 화면이 이 모달을 같이 씁니다.
+   어느 결과를 공유하는 중인지는 openShare(kind) 로 정해 둡니다.
+   실제 공유 동작은 13번 섹션에서 처리합니다.
    ========================================================== */
 
 const shareOverlay = document.getElementById("share-overlay");
 
-function openShare() {
+/* "s" 문장  "p" 화자 1명  "a" 전체 순위 */
+let shareKind = "p";
+
+function openShare(kind) {
+  shareKind = kind;
   shareOverlay.hidden = false;
   document.getElementById("share-close").focus();
 }
@@ -1163,8 +1185,11 @@ function closeShare() {
   shareOverlay.hidden = true;
 }
 
-document.getElementById("p-share").addEventListener("click", openShare);
-document.getElementById("a-share").addEventListener("click", openShare);
+/* addEventListener("click", openShare) 로 바로 넘기면
+   openShare 가 kind 자리에 Event 객체를 받습니다. 반드시 감쌉니다. */
+
+document.getElementById("p-share").addEventListener("click", function () { openShare("p"); });
+document.getElementById("a-share").addEventListener("click", function () { openShare("a"); });
 document.getElementById("share-close").addEventListener("click", closeShare);
 document.getElementById("share-scrim").addEventListener("click", closeShare);
 
@@ -2211,6 +2236,223 @@ document.getElementById("p-save").addEventListener("click", function () {
 document.getElementById("a-save").addEventListener("click", function () {
   if (!state.all) { toast("판독 결과가 없습니다."); return; }
   saveCard(makeRankCard, state.all, "rank");
+});
+
+/* ==========================================================
+   13. SNS 공유
+
+   공유 링크는 서버의 /s 로 갑니다.
+   /s 는 og 태그가 박힌 미리보기 페이지를 돌려주고,
+   화면 아래 "나도 해보기" 버튼이 /ui/ 로 데려옵니다.
+
+   링크에 담는 것은 점수와 결과 종류뿐입니다.
+   화자 이름과 입력 문장은 담지 않습니다.
+   등급 이름도 담지 않습니다. /s 가 점수에서 다시 계산합니다.
+   ========================================================== */
+
+/* ---------------- 공유 대상 ---------------- */
+
+function shareTarget(kind) {
+
+  if (kind === "s") {
+    if (!state.sentence) return null;
+    return { t: "s", score: state.sentence.score, prov: false };
+  }
+
+  if (kind === "a") {
+    if (!state.all || !state.all.results.length) return null;
+    const top = state.all.results[0];
+    return { t: "a", score: top.final_score, prov: !!top.is_provisional };
+  }
+
+  if (!state.speaker) return null;
+  return {
+    t: "p",
+    score: state.speaker.final_score,
+    prov: !!state.speaker.is_provisional
+  };
+}
+
+/* location.origin 이 이미 절대 주소(https 포함)입니다.
+   서버 주소를 따로 내려받을 필요가 없습니다. */
+
+function shareUrl(target) {
+  let url = location.origin + "/s?t=" + target.t +
+            "&sc=" + Math.round(target.score);
+
+  /* 표본 부족 결과는 등급 이름을 붙이면 안 됩니다.
+     (앱 화면도 "표본 부족" 이라고만 씁니다) */
+  if (target.prov) url += "&p=1";
+
+  return url;
+}
+
+function shareTitle(target) {
+  return "내 영포티 지수는 " + Math.round(target.score) + "점!";
+}
+
+const SHARE_DESC = "카카오톡 말투로 알아보는 나의 영포티 지수";
+
+/* ---------------- 링크 복사 ---------------- */
+
+/* navigator.clipboard 는 보안 컨텍스트(https / localhost)에서만 있습니다.
+   http://192.168.x.x:8000 으로 폰에서 테스트할 때가 바로 그 경우라
+   execCommand 폴백이 실제로 쓰입니다. */
+
+function legacyCopy(text) {
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.top = "0";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+
+  area.select();
+  area.setSelectionRange(0, text.length);   /* iOS 사파리는 이게 있어야 합니다 */
+
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+
+  area.remove();
+  return ok;
+}
+
+function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text).then(
+      function () { return true; },
+      function () { return legacyCopy(text); }
+    );
+  }
+  return Promise.resolve(legacyCopy(text));
+}
+
+/* ---------------- 카카오톡 ---------------- */
+
+/* 카카오 개발자 문서(자바스크립트 시작하기)에서 SDK 버전을 확인하세요.
+   integrity 를 붙이려면 문서의 src + integrity 를 반드시 쌍으로
+   그대로 복사하세요. 해시를 손으로 써서 버전과 어긋나면
+   브라우저가 스크립트를 아무 말 없이 버리고, 그러면
+   카카오 버튼이 이유 없이 항상 링크 복사로만 동작하게 됩니다. */
+
+const KAKAO_SDK_SRC = "https://t1.kakaocdn.net/kakao_js_sdk/2.7.5/kakao.min.js";
+
+let kakaoReady = null;
+
+/* 첫 클릭 때만 받습니다. 모든 방문자에게 CDN 스크립트를 물리지 않습니다. */
+
+function loadKakao() {
+  if (!window.__KAKAO_KEY__) {
+    return Promise.reject(new Error("카카오 키가 설정되지 않았습니다"));
+  }
+  if (kakaoReady) return kakaoReady;
+
+  kakaoReady = new Promise(function (resolve, reject) {
+    const s = document.createElement("script");
+    s.src = KAKAO_SDK_SRC;
+    s.crossOrigin = "anonymous";
+    s.onload = resolve;
+    s.onerror = function () { reject(new Error("SDK 로드 실패")); };
+    document.head.appendChild(s);
+  }).then(function () {
+    if (!window.Kakao) throw new Error("SDK 없음");
+    if (!Kakao.isInitialized()) Kakao.init(window.__KAKAO_KEY__);
+  });
+
+  return kakaoReady;
+}
+
+async function shareKakao(target) {
+  const url = shareUrl(target);
+
+  try {
+    await loadKakao();
+
+    Kakao.Share.sendDefault({
+      objectType: "feed",
+      content: {
+        title: shareTitle(target),
+        description: SHARE_DESC,
+        imageUrl: location.origin + "/ui/img/keyart.png",
+        link: { mobileWebUrl: url, webUrl: url }
+      },
+      buttons: [
+        { title: "나도 해보기", link: { mobileWebUrl: url, webUrl: url } }
+      ]
+    });
+
+    closeShare();
+
+  } catch (err) {
+    /* 키가 아직 없거나(카카오 콘솔 설정 전) 도메인이 등록되지 않았거나
+       CDN 이 막힌 환경입니다. 기능을 죽이지 않고 링크 복사로 대신합니다. */
+    kakaoReady = null;
+    const ok = await copyText(url);
+    closeShare();
+    toast(ok ? "링크를 복사했어요. 카톡에 붙여넣어 주세요 🔗"
+             : "카카오톡 공유를 쓸 수 없어요 😢");
+  }
+}
+
+/* ---------------- 페이스북 ---------------- */
+
+/* window.open 은 클릭 핸들러 안에서 "동기로" 불려야 합니다.
+   await 를 하나라도 끼우면 팝업 차단기가 막습니다. */
+
+function shareFacebook(target) {
+  window.open(
+    "https://www.facebook.com/sharer/sharer.php?u=" +
+      encodeURIComponent(shareUrl(target)),
+    "_blank",
+    "noopener,noreferrer,width=600,height=640"
+  );
+  closeShare();
+}
+
+/* ---------------- 인스타그램 ---------------- */
+
+/* 인스타그램에는 웹에서 부를 수 있는 공유 인텐트가 없습니다.
+   (오직 앱 안에서만 게시할 수 있습니다)
+   그래서 12번 섹션의 이미지 저장 경로로 넘깁니다.
+   저장된 카드를 사용자가 스토리에 올리면 됩니다.
+
+   버튼을 직접 눌러서 기존 핸들러의 "결과 없음" 방어까지 그대로 씁니다. */
+
+function shareImage(kind) {
+  closeShare();
+  const id = kind === "s" ? "s-save" : (kind === "a" ? "a-save" : "p-save");
+  document.getElementById(id).click();
+}
+
+/* ---------------- 버튼 연결 ---------------- */
+
+const SHARE_ACTION = {
+  kakao: shareKakao,
+  fb: shareFacebook,
+  link: function (target) {
+    const url = shareUrl(target);
+    copyText(url).then(function (ok) {
+      closeShare();
+      toast(ok ? "링크를 복사했어요 🔗" : "링크를 복사하지 못했어요 😢");
+    });
+  }
+};
+
+document.addEventListener("click", function (e) {
+  const el = e.target.closest("[data-share]");
+  if (!el) return;
+
+  /* 문장 결과 화면의 아이콘은 kind 를 직접 갖고 있고,
+     모달 안의 아이콘은 openShare 가 정해 둔 shareKind 를 씁니다. */
+  const kind = el.dataset.shareKind || shareKind;
+
+  if (el.dataset.share === "insta") { shareImage(kind); return; }
+
+  const target = shareTarget(kind);
+  if (!target) { toast("판독 결과가 없습니다."); return; }
+
+  SHARE_ACTION[el.dataset.share](target);
 });
 </script>
 

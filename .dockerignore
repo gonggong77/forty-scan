@@ -41,6 +41,12 @@ charImg
 # --- 개발 전용 의존성 목록 ---
 requirements-dev.txt
 
+# --- 개발 / 시안 전용 HTML (배포 이미지에는 불필요) ---
+static/og-gen.html
+static/index_dev.html
+static/forty_scan_web_wireframe.html
+static/forty_scan_wireframe_board.html
+
 # --- 학습 / CLI 스크립트: 서빙 import 그래프 밖입니다 ---
 #     forty_scan_*.py 로 묶어 제외한 뒤,
 #     런타임에 반드시 필요한 features 만 되살립니다. (뒤 규칙이 우선)
@@ -63,6 +69,6 @@ model/forty_scan_weighted_logistic_model.pkl
 #   forty_web.py, forty_backend.py, forty_scan_features.py
 #   requirements.txt, Dockerfile
 #   model/forty_scan_현경_model.pkl
-#   static/ 전체 (index.html, img/keyart.png)
+#   static/ (index.html, img/, og/) — og-gen.html 과 시안 3개는 제외
 #   charimg_web/ 전체 (PNG 5개)
 # ==========================================================
