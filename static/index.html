@@ -1827,13 +1827,35 @@ function loadImage(src) {
 /* 구글 폰트가 아직 안 왔으면 최대 1.5초만 기다립니다.
    CDN 이 막혀 있거나 오프라인이면 폴백 폰트로 조용히 그립니다. */
 
+/* saveCard 가 navigator.share 를 부르기 전에 이 Promise 를 await 하면
+   사용자 클릭으로 생긴 transient activation 이 소진될 수 있어서,
+   결과 화면이 뜨는 즉시 한 번만 시작해 두고 캐시합니다. */
+
+let fontReady = null;
+
 function ensureFont() {
+  if (fontReady) return fontReady;
   if (!(window.FontFace && document.fonts && document.fonts.load)) {
-    return Promise.resolve();
+    fontReady = Promise.resolve();
+    return fontReady;
   }
   const wait = document.fonts.load('400 96px "Black Han Sans"').catch(function () {});
   const timeout = new Promise(function (r) { setTimeout(r, 1500); });
-  return Promise.race([wait, timeout]);
+  fontReady = Promise.race([wait, timeout]);
+  return fontReady;
+}
+
+ensureFont();
+
+/* iOS/iPadOS Safari 는 <a download> 를 무시하고 이미지를 새 탭으로 열어버려서
+   다운로드가 사실상 안 됩니다. 그 환경에서만 공유 시트를 기본으로 씁니다.
+   iPadOS 는 데스크톱 Safari 로 위장하므로 터치 지원 여부로 같이 걸러냅니다. */
+
+function canRealDownload() {
+  const ua = navigator.userAgent || "";
+  const isIOS = /iPad|iPhone|iPod/.test(ua) ||
+    (ua.includes("Macintosh") && navigator.maxTouchPoints > 1);
+  return !isIOS;
 }
 
 const CARD_FONT_HEAD = '"Black Han Sans", "Malgun Gothic", sans-serif';
@@ -1893,8 +1915,12 @@ function roundRect(ctx, x, y, w, h, r) {
 /* 결과 화면의 반원 게이지(856~860행)를 canvas 로 다시 그립니다. */
 
 function drawArcGauge(ctx, cx, cy, r, score, color) {
+  /* SVG 게이지(858행)와 같은 반원: 왼쪽 끝(180°)에서 시작해
+     위쪽(270°)을 지나 오른쪽 끝(360°)으로 도는 "무지개" 모양입니다.
+     end 를 0 이 아니라 2*PI 로 둬야 시계 방향 스윕이 아래쪽 반원이 아니라
+     위쪽 반원을 지나갑니다. */
   const start = Math.PI;
-  const end = 0;
+  const end = Math.PI * 2;
   const ratio = Math.max(0, Math.min(100, score)) / 100;
   const mid = start + (end - start) * ratio;
 
@@ -1903,13 +1929,13 @@ function drawArcGauge(ctx, cx, cy, r, score, color) {
 
   ctx.strokeStyle = CARD_COLOR.track;
   ctx.beginPath();
-  ctx.arc(cx, cy, r, start, end, true);
+  ctx.arc(cx, cy, r, start, end);
   ctx.stroke();
 
   if (ratio > 0) {
     ctx.strokeStyle = color;
     ctx.beginPath();
-    ctx.arc(cx, cy, r, start, mid, true);
+    ctx.arc(cx, cy, r, start, mid);
     ctx.stroke();
   }
 }
@@ -2030,24 +2056,28 @@ async function makeSentenceCard(r) {
   const ctx = canvas.getContext("2d");
 
   await drawCardShell(ctx);
-  await drawStage(ctx, CARD_W / 2, 380, 380, r.score);
+  /* 캐릭터를 카드 상단 구역에 크게: cy=430, size=520 → 바닥은 690 에서 끝납니다. */
+  await drawStage(ctx, CARD_W / 2, 430, 520, r.score);
 
-  drawGaugeBlock(ctx, 760, r.score, CARD_COLOR.green);
+  /* 게이지 이하 요소는 카드 하단 구역에 몰아서 배치합니다.
+     게이지 반원(반지름 240)의 윗점이 캐릭터 바닥(690)보다 50 이상 아래(740)에
+     오도록 cy=980 으로 두고, 등급/코멘트/칩은 그 아래로 이어 붙입니다. */
+  drawGaugeBlock(ctx, 980, r.score, CARD_COLOR.green);
 
   ctx.fillStyle = CARD_COLOR.ink;
   ctx.font = "400 52px " + CARD_FONT_HEAD;
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
-  ctx.fillText(r.grade, CARD_W / 2, 850);
+  ctx.fillText(r.grade, CARD_W / 2, 1060);
 
   ctx.fillStyle = CARD_COLOR.muted;
   ctx.font = "400 30px " + CARD_FONT_BODY;
   const commentLines = wrapText(ctx, r.grade_comment || "", CARD_W - 200);
   commentLines.slice(0, 2).forEach(function (line, i) {
-    ctx.fillText(line, CARD_W / 2, 900 + i * 42);
+    ctx.fillText(line, CARD_W / 2, 1105 + i * 42);
   });
 
-  drawFeatureChips(ctx, 1010, r.detected_features);
+  drawFeatureChips(ctx, 1200, r.detected_features);
 
   return canvas;
 }
@@ -2061,27 +2091,31 @@ async function makeSpeakerCard(r) {
   const color = r.is_provisional ? CARD_COLOR.gray : CARD_COLOR.green;
 
   await drawCardShell(ctx);
-  await drawStage(ctx, CARD_W / 2, 360, 360, r.final_score);
+  /* 캐릭터를 카드 상단 구역에 크게: cy=420, size=480 → 바닥은 660 에서 끝납니다. */
+  await drawStage(ctx, CARD_W / 2, 420, 480, r.final_score);
 
   ctx.fillStyle = CARD_COLOR.ink;
   ctx.font = "500 34px " + CARD_FONT_BODY;
   ctx.textAlign = "center";
-  ctx.fillText(r.speaker, CARD_W / 2, 570);
+  ctx.fillText(r.speaker, CARD_W / 2, 700);
 
-  drawGaugeBlock(ctx, 740, r.final_score, color);
+  /* 게이지 이하 요소는 카드 하단 구역에 몰아서 배치합니다.
+     게이지 반원(반지름 240)의 윗점이 이름(700)보다 60 이상 아래(760)에
+     오도록 cy=1000 으로 두고, 등급/코멘트/메타는 그 아래로 이어 붙입니다. */
+  drawGaugeBlock(ctx, 1000, r.final_score, color);
 
   ctx.fillStyle = CARD_COLOR.ink;
   ctx.font = "400 52px " + CARD_FONT_HEAD;
-  ctx.fillText(r.final_grade, CARD_W / 2, 830);
+  ctx.fillText(r.final_grade, CARD_W / 2, 1080);
 
   ctx.fillStyle = CARD_COLOR.muted;
   ctx.font = "400 30px " + CARD_FONT_BODY;
   const commentLines = wrapText(ctx, r.final_comment || "", CARD_W - 200);
   commentLines.slice(0, 2).forEach(function (line, i) {
-    ctx.fillText(line, CARD_W / 2, 880 + i * 42);
+    ctx.fillText(line, CARD_W / 2, 1125 + i * 42);
   });
 
-  const metaY = 960 + Math.max(0, commentLines.length - 1) * 42;
+  const metaY = 1210 + Math.max(0, commentLines.length - 1) * 42;
   ctx.font = "400 26px " + CARD_FONT_BODY;
   ctx.fillStyle = color;
 
@@ -2175,11 +2209,38 @@ async function makeRankCard(all) {
 
 /* ---------------- 저장 파이프라인 ---------------- */
 
-/* 1순위: OS 공유 시트. 사진 앱 저장이나 카톡 전송으로 바로 이어질 수 있고,
-   iOS Safari 처럼 <a download> 가 제대로 안 먹히는 환경에서도 확실히 동작합니다.
-   지원하지 않거나 실패하면 다운로드로 폴백합니다. */
+/* 버튼 이름대로 기본은 항상 파일 다운로드입니다.
+   iOS Safari 는 <a download> 를 무시하고 이미지를 새 탭으로 열어버리는 예외라
+   그 환경(canRealDownload() === false)에서만 OS 공유 시트를 기본으로 쓰고,
+   실패하면 다운로드로 폴백합니다.
+   인스타그램 공유(13번 섹션)는 반대로 공유 시트가 기본이고
+   실패하면 다운로드로 폴백합니다 — mode: "share" 로 구분합니다. */
 
-async function saveCard(makeFn, arg, slug) {
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+  toast("이미지를 저장했어요 📸");
+}
+
+/* 성공: true, 사용자가 시트를 취소함: "abort", 그 외 실패: false */
+async function shareBlob(file) {
+  if (!(navigator.canShare && navigator.canShare({ files: [file] }))) return false;
+  try {
+    await navigator.share({ files: [file], title: "영포티 판독기" });
+    return true;
+  } catch (err) {
+    if (err && err.name === "AbortError") return "abort";
+    return false;
+  }
+}
+
+async function saveCard(makeFn, arg, slug, mode) {
   if (savingBusy) return;
   savingBusy = true;
   toast("이미지를 만들고 있어요…");
@@ -2195,47 +2256,61 @@ async function saveCard(makeFn, arg, slug) {
     const filename = "forty-scan-" + slug + ".png";
     const file = new File([blob], filename, { type: "image/png" });
 
-    if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      try {
-        await navigator.share({ files: [file], title: "영포티 판독기" });
-        return;
-      } catch (err) {
-        if (err && err.name === "AbortError") return; /* 사용자가 공유를 취소했습니다 */
-        /* 공유가 실패하면 아래 다운로드로 넘어갑니다 */
-      }
+    const preferShare = mode === "share" || !canRealDownload();
+
+    if (preferShare) {
+      const shared = await shareBlob(file);
+      if (shared === true) { toast("공유했어요 🙌"); return; }
+      if (shared === "abort") { toast("공유를 취소했습니다."); return; }
+      /* 공유를 못 쓰거나 실패하면 다운로드로 폴백합니다 */
+      downloadBlob(blob, filename);
+      return;
     }
 
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
-
-    toast("이미지를 저장했어요 📸");
+    downloadBlob(blob, filename);
 
   } catch (err) {
+    console.error("[forty-scan] 이미지 저장 실패:", err);
     toast("이미지를 만들지 못했습니다 😢");
   } finally {
     savingBusy = false;
   }
 }
 
-document.getElementById("s-save").addEventListener("click", function () {
-  if (!state.sentence) { toast("판독 결과가 없습니다."); return; }
-  saveCard(makeSentenceCard, state.sentence, "sentence-" + Math.round(state.sentence.score));
-});
+const SAVE_TARGET = {
+  s: {
+    id: "s-save",
+    check: function () { return !!state.sentence; },
+    run: function (mode) {
+      saveCard(makeSentenceCard, state.sentence, "sentence-" + Math.round(state.sentence.score), mode);
+    }
+  },
+  p: {
+    id: "p-save",
+    check: function () { return !!state.speaker; },
+    run: function (mode) {
+      saveCard(makeSpeakerCard, state.speaker, "speaker-" + Math.round(state.speaker.final_score), mode);
+    }
+  },
+  a: {
+    id: "a-save",
+    check: function () { return !!state.all; },
+    run: function (mode) {
+      saveCard(makeRankCard, state.all, "rank", mode);
+    }
+  }
+};
 
-document.getElementById("p-save").addEventListener("click", function () {
-  if (!state.speaker) { toast("판독 결과가 없습니다."); return; }
-  saveCard(makeSpeakerCard, state.speaker, "speaker-" + Math.round(state.speaker.final_score));
-});
+function runSave(kind, mode) {
+  const target = SAVE_TARGET[kind];
+  if (!target.check()) { toast("판독 결과가 없습니다."); return; }
+  target.run(mode);
+}
 
-document.getElementById("a-save").addEventListener("click", function () {
-  if (!state.all) { toast("판독 결과가 없습니다."); return; }
-  saveCard(makeRankCard, state.all, "rank");
+Object.keys(SAVE_TARGET).forEach(function (kind) {
+  document.getElementById(SAVE_TARGET[kind].id).addEventListener("click", function () {
+    runSave(kind, "download");
+  });
 });
 
 /* ==========================================================
@@ -2417,12 +2492,12 @@ function shareFacebook(target) {
    그래서 12번 섹션의 이미지 저장 경로로 넘깁니다.
    저장된 카드를 사용자가 스토리에 올리면 됩니다.
 
-   버튼을 직접 눌러서 기존 핸들러의 "결과 없음" 방어까지 그대로 씁니다. */
+   여기서는 "download" 가 아니라 "share" 모드로 넘겨서
+   PC 에서도 다운로드 대신 공유 시트가 먼저 뜨도록 합니다. */
 
 function shareImage(kind) {
   closeShare();
-  const id = kind === "s" ? "s-save" : (kind === "a" ? "a-save" : "p-save");
-  document.getElementById(id).click();
+  runSave(kind, "share");
 }
 
 /* ---------------- 버튼 연결 ---------------- */
