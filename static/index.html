@@ -35,6 +35,7 @@
   --green-tint: rgba(21,143,105,0.09);
   --yellow: #FEC926;
   --yellow-tint: rgba(254,201,38,0.20);
+  --red: #E23B2E;
   --ink: #3d3627;
   --muted: #a89a7a;
   --white: #ffffff;
@@ -856,6 +857,7 @@ button:disabled { cursor: default; opacity: .5; }
     <div class="gauge-wrap">
       <svg class="gauge" viewBox="0 0 200 120" aria-hidden="true">
         <path d="M20,100 A80,80 0 0,1 180,100" fill="none" stroke="#dcece4" stroke-width="16" stroke-linecap="round"/>
+        <!-- stroke/fill 은 drawGauge() 가 점수에 맞춰 즉시 덮어씁니다 -->
         <path class="arc-fill" id="s-arc" d="M20,100 A80,80 0 0,1 180,100" fill="none"
               stroke="#158F69" stroke-width="16" stroke-linecap="round"/>
         <text class="score-num" id="s-score" x="100" y="92" text-anchor="middle" fill="#158F69">0</text>
@@ -900,6 +902,7 @@ button:disabled { cursor: default; opacity: .5; }
     <div class="gauge-wrap">
       <svg class="gauge" viewBox="0 0 200 120" aria-hidden="true">
         <path d="M20,100 A80,80 0 0,1 180,100" fill="none" stroke="#dcece4" stroke-width="16" stroke-linecap="round"/>
+        <!-- stroke/fill 은 drawGauge() 가 점수에 맞춰 즉시 덮어씁니다 -->
         <path class="arc-fill" id="p-arc" d="M20,100 A80,80 0 0,1 180,100" fill="none"
               stroke="#158F69" stroke-width="16" stroke-linecap="round"/>
         <text class="score-num" id="p-score" x="100" y="92" text-anchor="middle" fill="#158F69">0</text>
@@ -1024,6 +1027,34 @@ function gradeStep(score) {
   if (score < 60) return 3;   /* 영포티 경계 */
   if (score < 80) return 4;   /* 영포티 고위험군 */
   return 5;                   /* 말기 영포티 */
+}
+
+/* 게이지 색: 0점 초록 → 50점 노랑 → 100점 빨강 연속 보간.
+   점수가 높을수록(영포티에 가까울수록) 빨갛게 보이도록 합니다. */
+
+const SCORE_STOPS = [
+  [0,   [0x15, 0x8F, 0x69]],   /* --green */
+  [50,  [0xFE, 0xC9, 0x26]],   /* --yellow */
+  [100, [0xE2, 0x3B, 0x2E]]    /* --red */
+];
+
+function scoreColor(score) {
+  const s = Math.max(0, Math.min(100, score));
+  let lo = SCORE_STOPS[0], hi = SCORE_STOPS[SCORE_STOPS.length - 1];
+
+  for (let i = 0; i < SCORE_STOPS.length - 1; i++) {
+    if (s >= SCORE_STOPS[i][0] && s <= SCORE_STOPS[i + 1][0]) {
+      lo = SCORE_STOPS[i];
+      hi = SCORE_STOPS[i + 1];
+      break;
+    }
+  }
+
+  const range = hi[0] - lo[0];
+  const t = range === 0 ? 0 : (s - lo[0]) / range;
+  const rgb = lo[1].map(function (c, i) { return Math.round(c + (hi[1][i] - c) * t); });
+
+  return "#" + rgb.map(function (c) { return c.toString(16).padStart(2, "0"); }).join("");
 }
 
 /* charImg 폴더는 static 밖에 있어서 forty_web.py 가 /charimg 로 따로 붙여 둡니다. */
@@ -1519,9 +1550,9 @@ const ARC_LENGTH = Math.PI * 80;   /* 반원 게이지 호의 길이 (r = 80) */
 
 function drawGauge(arcEl, numEl, score, provisional) {
 
-  const color = provisional ? "#b3ab97" : "#158F69";
-  arcEl.setAttribute("stroke", color);
-  numEl.setAttribute("fill", color);
+  const startColor = provisional ? "#b3ab97" : scoreColor(0);
+  arcEl.setAttribute("stroke", startColor);
+  numEl.setAttribute("fill", startColor);
 
   /* 먼저 0 으로 두었다가 다음 프레임에 목표값을 넣어야 채워지는 게 보입니다. */
   arcEl.style.transition = "none";
@@ -1535,17 +1566,26 @@ function drawGauge(arcEl, numEl, score, provisional) {
     arcEl.setAttribute("stroke-dashoffset", ARC_LENGTH * (1 - ratio));
   });
 
-  countUp(numEl, score);
+  /* 판정 보류는 색을 단정하면 안 되므로 회색 고정, 아니면 차오르는 값에 맞춰 색도 같이 물듭니다. */
+  const onTick = provisional ? null : function (current) {
+    const c = scoreColor(current);
+    arcEl.setAttribute("stroke", c);
+    numEl.setAttribute("fill", c);
+  };
+
+  countUp(numEl, score, onTick);
 }
 
-function countUp(el, target) {
+function countUp(el, target, onTick) {
   const started = performance.now();
   const dur = 900;
 
   function step(now) {
     const t = Math.min(1, (now - started) / dur);
     const eased = 1 - Math.pow(1 - t, 3);
-    el.textContent = Math.round(target * eased);
+    const current = target * eased;
+    el.textContent = Math.round(current);
+    if (onTick) onTick(current);
     if (t < 1) requestAnimationFrame(step);
   }
 
@@ -2062,7 +2102,7 @@ async function makeSentenceCard(r) {
   /* 게이지 이하 요소는 카드 하단 구역에 몰아서 배치합니다.
      게이지 반원(반지름 240)의 윗점이 캐릭터 바닥(690)보다 50 이상 아래(740)에
      오도록 cy=980 으로 두고, 등급/코멘트/칩은 그 아래로 이어 붙입니다. */
-  drawGaugeBlock(ctx, 980, r.score, CARD_COLOR.green);
+  drawGaugeBlock(ctx, 980, r.score, scoreColor(r.score));
 
   ctx.fillStyle = CARD_COLOR.ink;
   ctx.font = "400 52px " + CARD_FONT_HEAD;
@@ -2088,7 +2128,7 @@ async function makeSpeakerCard(r) {
   canvas.height = CARD_H;
   const ctx = canvas.getContext("2d");
 
-  const color = r.is_provisional ? CARD_COLOR.gray : CARD_COLOR.green;
+  const color = r.is_provisional ? CARD_COLOR.gray : scoreColor(r.final_score);
 
   await drawCardShell(ctx);
   /* 캐릭터를 카드 상단 구역에 크게: cy=420, size=480 → 바닥은 660 에서 끝납니다. */
