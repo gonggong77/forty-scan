@@ -75,11 +75,11 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 # charimg_web/level1.png ~ charimg_web/level5.png 가
 # forty_scan_features.py 의 GRADES 5구간과 순서대로 짝을 이룹니다.
 #
-#   level1 = 진성 MZ            (0  ~ 20)
+#   level1 = 완전 청정          (0  ~ 20)
 #   level2 = 정상 범주          (20 ~ 40)
 #   level3 = 영포티 경계        (40 ~ 60)
-#   level4 = MZ 코스프레 40대   (60 ~ 80)
-#   level5 = 확진 영포티        (80 ~ )
+#   level4 = 영포티 고위험군    (60 ~ 80)
+#   level5 = 말기 영포티        (80 ~ )
 #
 # 파일명은 반드시 ASCII 로 유지하세요.
 # 한글 파일명은 Cloud Build 가 만든 이미지 안에서 깨져
