@@ -72,14 +72,18 @@ STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 # 등급별 캐릭터 이미지 폴더입니다.
 #
-# charimg_web/1단계.png ~ charimg_web/5단계.png 가
+# charimg_web/level1.png ~ charimg_web/level5.png 가
 # forty_scan_features.py 의 GRADES 5구간과 순서대로 짝을 이룹니다.
 #
-#   1단계 = 진성 MZ            (0  ~ 20)
-#   2단계 = 정상 범주          (20 ~ 40)
-#   3단계 = 영포티 경계        (40 ~ 60)
-#   4단계 = MZ 코스프레 40대   (60 ~ 80)
-#   5단계 = 확진 영포티        (80 ~ )
+#   level1 = 진성 MZ            (0  ~ 20)
+#   level2 = 정상 범주          (20 ~ 40)
+#   level3 = 영포티 경계        (40 ~ 60)
+#   level4 = MZ 코스프레 40대   (60 ~ 80)
+#   level5 = 확진 영포티        (80 ~ )
+#
+# 파일명은 반드시 ASCII 로 유지하세요.
+# 한글 파일명은 Cloud Build 가 만든 이미지 안에서 깨져
+# Cloud Run 배포가 "Container import failed" 로 실패합니다.
 #
 # 원본은 charImg/ 에 있지만 장당 0.7~1.6MB(4K 해상도)라
 # 결과 화면(가로 380px 안팎)에 쓰기엔 과합니다.
@@ -613,9 +617,9 @@ app.mount(
 #
 # 화면에서는 점수 구간을 1~5 로 바꾼 뒤
 #
-#   /charimg/1단계.png ~ /charimg/5단계.png
+#   /charimg/level1.png ~ /charimg/level5.png
 #
-# 으로 부릅니다. (한글 파일명은 브라우저가 알아서 인코딩합니다.)
+# 으로 부릅니다.
 
 if not os.path.isdir(CHARIMG_DIR):
 

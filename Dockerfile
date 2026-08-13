@@ -15,10 +15,11 @@
 # Cloud Run 은 linux/amd64 만 실행합니다.
 FROM --platform=linux/amd64 python:3.12-slim
 
-# LANG 은 베이스 이미지가 이미 C.UTF-8 로 설정하지만,
-# 베이스가 바뀌어도 한글 파일명이 깨지지 않도록 명시합니다.
-#   - model/forty_scan_현경_model.pkl
-#   - charimg_web/1단계.png ~ 5단계.png
+# 이미지에 들어가는 파일명은 전부 ASCII 로 유지합니다.
+# 한글 파일명은 Cloud Build 가 만든 레이어 안에서 잘못된 UTF-8 로 깨지고,
+# Cloud Run 이 그 이미지를 "Container import failed" 로 거부합니다.
+#   - model/forty_scan_hk_model.pkl   (원래 forty_scan_현경_model.pkl)
+#   - charimg_web/level1.png ~ level5.png  (원래 1단계.png ~ 5단계.png)
 ENV LANG=C.UTF-8 \
     LC_ALL=C.UTF-8 \
     PYTHONUNBUFFERED=1 \

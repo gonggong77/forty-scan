@@ -1021,7 +1021,7 @@ function gradeStep(score) {
 /* charImg 폴더는 static 밖에 있어서 forty_web.py 가 /charimg 로 따로 붙여 둡니다. */
 
 function charSrc(score) {
-  return "/charimg/" + gradeStep(score) + "단계.png";
+  return "/charimg/level" + gradeStep(score) + ".png";
 }
 
 /* 분석을 기다리는 동안 5장을 미리 받아 둡니다.
@@ -1034,7 +1034,7 @@ function preloadChars() {
   preloaded = true;
   for (let i = 1; i <= 5; i++) {
     const img = new Image();
-    img.src = "/charimg/" + i + "단계.png";
+    img.src = "/charimg/level" + i + ".png";
   }
 }
 
@@ -1205,7 +1205,7 @@ let loadingTimer = null;
 function startLoading() {
   preloadChars();
 
-  loadingChar.src = "/charimg/" + (1 + Math.floor(Math.random() * 5)) + "단계.png";
+  loadingChar.src = "/charimg/level" + (1 + Math.floor(Math.random() * 5)) + ".png";
 
   const order = LOADING_LINES.slice().sort(function () { return Math.random() - 0.5; });
   let i = 0;

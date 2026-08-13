@@ -38,7 +38,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 MODEL_DIR = os.path.join(BASE_DIR, "model")
 
-MODEL_PATH = os.path.join(MODEL_DIR, "forty_scan_현경_model.pkl")
+MODEL_PATH = os.path.join(MODEL_DIR, "forty_scan_hk_model.pkl")
 
 # 오타 보정 킬 스위치
 #
