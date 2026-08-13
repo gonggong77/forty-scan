@@ -40,9 +40,56 @@ import json
 import os
 import re
 
+
+# ==========================================================
+# 0-1. .env 자동 로딩
+#
+# python-dotenv 없이 직접 구현합니다. (이 저장소는 새 의존성을
+# 신중하게 추가하는 편이라, 파싱 몇 줄로 되는 걸 패키지로 끌어오지 않습니다.)
+#
+# 아래에서 바로 import forty_ocr 가 ANTHROPIC_API_KEY 를 읽으므로,
+# 다른 import 보다 먼저 여기서 .env 를 os.environ 에 채워 넣어야 합니다.
+#
+# 이미 설정된 환경변수는 덮어쓰지 않습니다.
+# (Cloud Run 의 Secret Manager 주입 값 / 셸에서 직접 지정한 값이 우선입니다.
+#  로컬 개발 편의를 위한 기능이지, 배포 시크릿 경로를 대신하지 않습니다.)
+# ==========================================================
+
+def _load_dotenv():
+
+    env_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        ".env"
+    )
+
+    if not os.path.isfile(env_path):
+        return
+
+    with open(env_path, "r", encoding="utf-8-sig") as handle:
+
+        for line in handle:
+
+            line = line.strip()
+
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, _, value = line.partition("=")
+
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+_load_dotenv()
+
+
 from fastapi import File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
 # 기존 백엔드를 그대로 재사용합니다.
 #
@@ -63,6 +110,12 @@ from forty_backend import (
 )
 
 from forty_scan_features import FEATURE_NAMES, GRADES, get_grade
+
+# 카톡 대화 캡처 사진 → 메시지 목록 추출.
+#
+# OCR_ENABLED 가 False 면 (ANTHROPIC_API_KEY 없음) /analyze-image 는
+# 항상 503 을 돌려주고, 화면에도 이 사실을 window.__OCR_ON__ 으로 알립니다.
+import forty_ocr
 
 
 # ==========================================================
@@ -543,33 +596,18 @@ def pick_top_sentences(sentence_results):
 # 6. 참여자 전원 분석 API
 # ==========================================================
 
-@app.post("/analyze-all")
-async def analyze_all(
-    file: UploadFile = File(...)
-):
+def build_results(messages):
     """
-    카카오톡 TXT 를 받아 대화에 등장한 모든 화자를 한 번에 분석합니다.
+    카카오톡 메시지 목록 [{"speaker","message"}] 을 받아
+    화자별 분석 결과를 final_score 내림차순으로 돌려줍니다.
 
-    화자마다 기존 analyze_conversation 을 그대로 호출하므로
-    /analyze 로 화자 1명씩 돌린 결과와 점수가 정확히 같습니다.
-
-    반환:
-
-        filename
-        message_count
-        results  (final_score 내림차순)
+    /analyze-all (TXT 업로드) 과 /analyze-messages (사진 판독 확인 후)
+    가 이 함수를 공유합니다. 점수 계산 경로가 완전히 같아야
+    같은 대화를 어느 쪽으로 넣어도 같은 점수가 나옵니다.
     """
 
     # ------------------------------------------------------
-    # 1. 업로드 파일 → 카카오톡 메시지 목록
-    # ------------------------------------------------------
-
-    messages = await load_messages_web(
-        file
-    )
-
-    # ------------------------------------------------------
-    # 2. 화자 목록
+    # 1. 화자 목록
     # ------------------------------------------------------
 
     speakers = get_speakers(
@@ -577,7 +615,7 @@ async def analyze_all(
     )
 
     # ------------------------------------------------------
-    # 3. 화자별 분석
+    # 2. 화자별 분석
     # ------------------------------------------------------
 
     results = []
@@ -637,7 +675,7 @@ async def analyze_all(
         )
 
     # ------------------------------------------------------
-    # 4. 영포티 지수 높은 순으로 정렬
+    # 3. 영포티 지수 높은 순으로 정렬
     # ------------------------------------------------------
 
     results.sort(
@@ -645,10 +683,121 @@ async def analyze_all(
         reverse=True
     )
 
+    return results
+
+
+@app.post("/analyze-all")
+async def analyze_all(
+    file: UploadFile = File(...)
+):
+    """
+    카카오톡 TXT 를 받아 대화에 등장한 모든 화자를 한 번에 분석합니다.
+
+    화자마다 기존 analyze_conversation 을 그대로 호출하므로
+    /analyze 로 화자 1명씩 돌린 결과와 점수가 정확히 같습니다.
+
+    반환:
+
+        filename
+        message_count
+        results  (final_score 내림차순)
+    """
+
+    # ------------------------------------------------------
+    # 1. 업로드 파일 → 카카오톡 메시지 목록
+    # ------------------------------------------------------
+
+    messages = await load_messages_web(
+        file
+    )
+
     return {
         "filename": file.filename,
         "message_count": len(messages),
-        "results": results
+        "results": build_results(messages)
+    }
+
+
+# ==========================================================
+# 6-a. 캡처 사진 → 메시지 추출 API
+#
+# 점수는 아직 계산하지 않습니다. 사용자가 확인/수정 화면에서
+# 잘못 읽힌 부분을 고칠 수 있게, 추출된 메시지 목록만 돌려줍니다.
+# 실제 채점은 /analyze-messages 가 사용자가 확정한 목록을 받아 합니다.
+# ==========================================================
+
+@app.post("/analyze-image")
+async def analyze_image(
+    files: list[UploadFile] = File(...)
+):
+    """
+    카톡 대화 캡처 사진(최대 3장)을 받아 메시지 목록을 추출합니다.
+
+    반환:
+
+        messages  [{"speaker","message"}, ...]
+        speakers  등장 순서대로 화자 목록
+    """
+
+    try:
+        images = await forty_ocr.validate_and_encode(files)
+
+        messages = forty_ocr.extract_messages(images)
+
+    except forty_ocr.OcrError as error:
+
+        status_code = 503 if not forty_ocr.OCR_ENABLED else 400
+
+        raise HTTPException(
+            status_code=status_code,
+            detail=error.message
+        )
+
+    return {
+        "messages": messages,
+        "speakers": get_speakers(messages)
+    }
+
+
+# ==========================================================
+# 6-b. 확인된 대화 채점 API
+#
+# 확인/수정 화면에서 사용자가 고친 메시지 목록을 받아 채점합니다.
+# /analyze-all 과 build_results() 를 공유하므로 응답 형태가 완전히
+# 같고, 프론트의 renderIntent() / 결과 화면이 그대로 재사용됩니다.
+# ==========================================================
+
+class MessageItem(BaseModel):
+    speaker: str
+    message: str
+
+
+class MessagesRequest(BaseModel):
+    messages: list[MessageItem]
+    filename: str = "사진 판독"
+
+
+@app.post("/analyze-messages")
+async def analyze_messages(
+    body: MessagesRequest
+):
+    messages = [
+        {"speaker": item.speaker, "message": item.message}
+        for item in body.messages
+        if item.speaker.strip() and item.message.strip()
+    ]
+
+    if not messages:
+
+        raise HTTPException(
+            status_code=400,
+            detail="분석할 대화가 없습니다."
+        )
+
+    return {
+        "filename": body.filename,
+        "message_count": len(messages),
+        "results": build_results(messages)
     }
 
 
@@ -864,6 +1013,10 @@ def landing_html(request):
         # (도메인으로 잠기기 때문에 유출 위험이 없습니다)
         # json.dumps 로 감싸서 따옴표가 섞여도 깨지지 않게 합니다.
         f'<script>window.__KAKAO_KEY__ = {json.dumps(KAKAO_JS_KEY)};</script>\n'
+        # 사진 판독 기능 스위치입니다. ANTHROPIC_API_KEY 가 없으면
+        # /analyze-image 는 항상 503 이므로, 화면에서 "사진으로" 타일을
+        # 아예 숨겨서 헛걸음을 막습니다.
+        f'<script>window.__OCR_ON__ = {json.dumps(forty_ocr.OCR_ENABLED)};</script>\n'
     )
 
     if OG_MARKER in page:

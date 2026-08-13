@@ -21,6 +21,9 @@
 .vscode
 .idea
 
+# --- 로컬 개발용 시크릿 (Cloud Run 은 Secret Manager 로 주입합니다) ---
+.env
+
 # --- 파이썬 캐시 / 가상환경 ---
 __pycache__
 **/__pycache__
@@ -66,7 +69,7 @@ model/forty_scan_weighted_logistic_model.pkl
 
 # ==========================================================
 # 반드시 남아야 하는 것 (배포 전 확인)
-#   forty_web.py, forty_backend.py, forty_scan_features.py
+#   forty_web.py, forty_backend.py, forty_scan_features.py, forty_ocr.py
 #   requirements.txt, Dockerfile
 #   model/forty_scan_현경_model.pkl
 #   static/ (index.html, img/, og/) — og-gen.html 과 시안 3개는 제외

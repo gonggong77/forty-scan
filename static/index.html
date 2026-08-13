@@ -288,6 +288,44 @@ button:disabled { cursor: default; opacity: .5; }
 .casual-input::placeholder { color: var(--muted); }
 .casual-input:focus { border-color: var(--green); box-shadow: 0 0 0 4px var(--green-tint); }
 
+/* ---------------- 사진 판독 확인/수정 ---------------- */
+
+.confirm-list {
+  width: 380px; max-width: 100%;
+  display: flex; flex-direction: column; gap: 14px;
+  overflow-y: auto;
+  padding: 4px 2px;
+}
+.confirm-card {
+  background: var(--white);
+  border: 1.5px solid var(--line);
+  border-radius: 18px;
+  padding: 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.confirm-name {
+  width: 100%;
+  border: none;
+  border-bottom: 1.5px solid var(--line);
+  font: inherit;
+  font-size: 15px; font-weight: 800;
+  color: var(--green-dk);
+  padding: 2px 2px 6px;
+  outline: none;
+}
+.confirm-name:focus { border-color: var(--green); }
+.confirm-textarea {
+  width: 100%;
+  min-height: 100px;
+  border: none;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--ink);
+  resize: vertical;
+  outline: none;
+}
+
 /* ---------------- 아바타 ---------------- */
 
 .avatar {
@@ -785,6 +823,11 @@ button:disabled { cursor: default; opacity: .5; }
         <div class="lb">문장 하나로</div>
         <div class="cap">지금 쓴 말투만 빠르게</div>
       </button>
+      <button class="opt-tile" type="button" data-go="shot" id="tile-shot" hidden>
+        <div class="mark">📷</div>
+        <div class="lb">사진으로</div>
+        <div class="cap">카톡 대화 캡처 화면</div>
+      </button>
     </div>
   </section>
 
@@ -808,6 +851,31 @@ button:disabled { cursor: default; opacity: .5; }
     <textarea class="casual-input" id="text-input"
               placeholder="예) 라떼는 말이야~^^"></textarea>
     <button class="round-btn" type="button" id="read-btn">판독하기</button>
+  </section>
+
+  <!-- ================= 4-1. 사진 업로드 ================= -->
+
+  <section class="screen" data-screen="shot">
+    <div class="headline">대화 캡처를 올려주세요</div>
+    <button class="drop" id="shot-drop" type="button">
+      <div class="mark">＋</div>
+      <div class="cap">여기로 끌어다 놓기 (최대 3장)</div>
+    </button>
+    <input type="file" id="shot-picker" accept="image/png,image/jpeg,image/webp" multiple hidden>
+    <button class="pill-btn" type="button" id="shot-pick-btn">사진 선택</button>
+    <div class="sub-min">사진은 글자를 읽기 위해 AI 판독 서비스로 전송되며, 저장하지 않습니다.</div>
+  </section>
+
+  <!-- ================= 4-2. 사진 판독 확인/수정 ================= -->
+
+  <section class="screen" data-screen="confirm">
+    <div class="headline">읽은 대화가 맞나요?</div>
+    <div class="sub-min">틀린 부분은 직접 고칠 수 있어요. 말투(물결, ㅋㅋㅋ, 이모티콘)까지 그대로 확인해 주세요.</div>
+    <div class="confirm-list" id="confirm-list"></div>
+    <div class="btn-row">
+      <button class="pill-btn ghost" type="button" data-go="shot">다시 올리기</button>
+      <button class="pill-btn" type="button" id="confirm-go">판독하기</button>
+    </div>
   </section>
 
   <!-- ================= 5. 로딩 ================= -->
@@ -991,6 +1059,8 @@ const state = {
   speaker: null,     /* all.results 중 지금 보고 있는 화자 하나 */
   sentence: null,    /* POST /analyze-sentence 응답 */
   intent: null,      /* "me" | "other" | "all" */
+  shots: null,       /* 사용자가 고른 이미지 File 배열 */
+  draft: null,       /* POST /analyze-image 응답 (확인 화면의 원본) */
   busy: false
 };
 
@@ -999,6 +1069,14 @@ const state = {
 
 const NEEDS_FILE     = ["intent", "whoami", "result-all", "result-speaker"];
 const NEEDS_SENTENCE = ["result-sentence"];
+const NEEDS_DRAFT     = ["confirm"];
+
+/* ANTHROPIC_API_KEY 가 없으면 서버가 __OCR_ON__ 을 false 로 내려줍니다.
+   /analyze-image 를 불러도 항상 503 이므로 타일을 아예 숨겨 헛걸음을 막습니다. */
+if (window.__OCR_ON__) {
+  const tileShot = document.getElementById("tile-shot");
+  if (tileShot) tileShot.removeAttribute("hidden");
+}
 
 /* ==========================================================
    1. 등급
@@ -1097,6 +1175,7 @@ function show(name) {
   /* 데이터 없이 결과 화면으로 들어오는 경우를 막습니다. */
   if (NEEDS_FILE.indexOf(name) >= 0 && !state.all) name = "landing";
   if (NEEDS_SENTENCE.indexOf(name) >= 0 && !state.sentence) name = "landing";
+  if (NEEDS_DRAFT.indexOf(name) >= 0 && !state.draft) name = "landing";
 
   /* 분석이 돌고 있지 않은데 로딩 화면에 서 있으면 영원히 안 끝납니다. */
   if (name === "loading" && !state.busy) name = "landing";
@@ -1259,7 +1338,7 @@ const loadingCopy = document.getElementById("loading-copy");
 const loadingChar = document.getElementById("loading-char");
 let loadingTimer = null;
 
-function startLoading() {
+function startLoading(firstLine) {
   preloadChars();
 
   loadingChar.src = "/charimg/level" + (1 + Math.floor(Math.random() * 5)) + ".png";
@@ -1267,7 +1346,7 @@ function startLoading() {
   const order = LOADING_LINES.slice().sort(function () { return Math.random() - 0.5; });
   let i = 0;
 
-  loadingCopy.textContent = order[0];
+  loadingCopy.textContent = firstLine || order[0];
 
   clearInterval(loadingTimer);
   loadingTimer = setInterval(function () {
@@ -1414,6 +1493,218 @@ async function sendSentence(text) {
   }
 }
 
+/* ---------------- 사진 판독 ---------------- */
+
+/* 서버로 보내기 전에 브라우저에서 긴 변을 줄여 재인코딩합니다.
+   결과 카드 저장(12번 섹션)에서 이미 canvas 로 그림을 그리고 있으므로
+   여기서도 새 의존성 없이 같은 방식을 씁니다.
+
+   이게 비용을 직접 줄이는 가장 효과적인 수단입니다 —
+   원본 그대로 보내면 비전 토큰이 그만큼 늘어납니다. */
+
+const SHOT_MAX_COUNT = 3;
+const SHOT_MAX_EDGE = 1568;
+const SHOT_MAX_BYTES = 5 * 1024 * 1024;
+
+function loadImageFile(file) {
+  return new Promise(function (resolve, reject) {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = function () { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = function () { URL.revokeObjectURL(url); reject(new Error("사진을 열 수 없습니다.")); };
+    img.src = url;
+  });
+}
+
+async function prepareShot(file) {
+  const img = await loadImageFile(file);
+
+  const longEdge = Math.max(img.naturalWidth, img.naturalHeight);
+  const scale = Math.min(1, SHOT_MAX_EDGE / longEdge);
+  const w = Math.max(1, Math.round(img.naturalWidth * scale));
+  const h = Math.max(1, Math.round(img.naturalHeight * scale));
+
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+
+  const blob = await new Promise(function (resolve) {
+    canvas.toBlob(resolve, "image/jpeg", 0.85);
+  });
+
+  if (!blob) throw new Error("사진을 처리하지 못했습니다.");
+  if (blob.size > SHOT_MAX_BYTES) throw new Error("사진 용량이 너무 큽니다. (장당 5MB)");
+
+  return new File([blob], "shot.jpg", { type: "image/jpeg" });
+}
+
+/* /analyze-image 는 채점하지 않고 읽은 대화만 돌려줍니다.
+   확인/수정 화면을 거친 뒤 sendDraft() 가 실제 채점을 요청합니다. */
+
+async function sendShots(fileList) {
+  if (state.busy) return;
+
+  let files = Array.prototype.slice.call(fileList || []);
+  if (!files.length) return;
+
+  if (files.length > SHOT_MAX_COUNT) {
+    toast("사진은 " + SHOT_MAX_COUNT + "장까지 올릴 수 있어요");
+    files = files.slice(0, SHOT_MAX_COUNT);
+  }
+
+  state.busy = true;
+  state.shots = files;
+  state.draft = null;
+
+  startLoading("사진 속 글자 읽는 중…");
+
+  const started = Date.now();
+
+  try {
+    const prepared = [];
+    for (let i = 0; i < files.length; i++) {
+      prepared.push(await prepareShot(files[i]));
+    }
+
+    const fd = new FormData();
+    prepared.forEach(function (f) { fd.append("files", f); });
+
+    const res = await fetch("/analyze-image", { method: "POST", body: fd });
+
+    let data = null;
+    try { data = await res.json(); } catch (_) { data = null; }
+
+    const wait = Math.max(0, 1100 - (Date.now() - started));
+    await new Promise(function (r) { setTimeout(r, wait); });
+
+    if (current !== "loading") { stopLoading(); return; }
+
+    if (!res.ok) {
+      showError(readDetail(data, res.status), "shot");
+      return;
+    }
+
+    stopLoading();
+    state.draft = data;
+    renderConfirm(data);
+    goReplace("confirm");
+
+  } catch (err) {
+    if (current !== "loading") { stopLoading(); return; }
+    showError(err && err.message ? err.message : "사진을 처리하지 못했습니다.", "shot");
+  } finally {
+    state.busy = false;
+  }
+}
+
+/* 확인 화면의 화자별 이름/textarea 를 다시 messages 배열로 되돌립니다.
+   빈 줄은 버리되 앞뒤 공백은 trim 하지 않습니다 — 띄어쓰기가
+   말투 특징 정규식(물결, 초성체 등)에 쓰이기 때문입니다. */
+
+function collectDraftMessages() {
+  const messages = [];
+
+  document.querySelectorAll("#confirm-list .confirm-card").forEach(function (card) {
+    const speaker = (card.querySelector(".confirm-name").value || "").trim();
+    if (!speaker) return;
+
+    card.querySelector(".confirm-textarea").value.split("\n").forEach(function (line) {
+      if (line.length === 0) return;
+      messages.push({ speaker: speaker, message: line });
+    });
+  });
+
+  return messages;
+}
+
+async function sendDraft() {
+  if (state.busy) return;
+
+  const messages = collectDraftMessages();
+
+  if (!messages.length) {
+    toast("판독할 대화가 없어요");
+    return;
+  }
+
+  state.busy = true;
+  startLoading();
+
+  const started = Date.now();
+  const filename = "사진 " + ((state.shots && state.shots.length) || 1) + "장";
+
+  try {
+    const res = await fetch("/analyze-messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ messages: messages, filename: filename })
+    });
+
+    let data = null;
+    try { data = await res.json(); } catch (_) { data = null; }
+
+    const wait = Math.max(0, 1100 - (Date.now() - started));
+    await new Promise(function (r) { setTimeout(r, wait); });
+
+    if (current !== "loading") { stopLoading(); return; }
+
+    if (!res.ok) {
+      showError(readDetail(data, res.status), "confirm");
+      return;
+    }
+
+    stopLoading();
+    state.all = data;
+    renderIntent();
+    goReplace("intent");
+
+  } catch (err) {
+    if (current !== "loading") { stopLoading(); return; }
+    showError("서버에 연결하지 못했습니다. (" + err.message + ")", "confirm");
+  } finally {
+    state.busy = false;
+  }
+}
+
+/* 사진 판독 결과를 화자별 카드로 그립니다.
+   이름은 input, 대사는 textarea 한 개(한 줄 = 메시지 하나)로 둬서
+   오타 교정 / 화자 재배정 / 잘못 잡힌 줄 삭제를 모두 커버합니다. */
+
+function renderConfirm(data) {
+  const list = document.getElementById("confirm-list");
+  list.innerHTML = "";
+
+  const messages = data.messages || [];
+
+  const speakers = (data.speakers && data.speakers.length)
+    ? data.speakers
+    : Array.from(new Set(messages.map(function (m) { return m.speaker; })));
+
+  speakers.forEach(function (speaker) {
+    const lines = messages
+      .filter(function (m) { return m.speaker === speaker; })
+      .map(function (m) { return (m.message || "").replace(/\r?\n/g, " "); });
+
+    const card = document.createElement("div");
+    card.className = "confirm-card";
+
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.className = "confirm-name";
+    nameInput.value = speaker;
+
+    const textArea = document.createElement("textarea");
+    textArea.className = "confirm-textarea";
+    textArea.rows = Math.max(3, Math.min(12, lines.length));
+    textArea.value = lines.join("\n");
+
+    card.appendChild(nameInput);
+    card.appendChild(textArea);
+    list.appendChild(card);
+  });
+}
+
 /* ==========================================================
    7. 업로드 화면
    ========================================================== */
@@ -1458,6 +1749,59 @@ picker.addEventListener("change", function () {
   const file = picker.files && picker.files[0];
   if (file) sendFile(file);
   picker.value = "";   /* 같은 파일을 다시 골라도 change 가 걸리도록 */
+});
+
+/* ==========================================================
+   7-1. 사진 업로드 화면
+
+   드래그앤드롭 배선은 위 TXT 업로드 화면과 동일합니다.
+   ========================================================== */
+
+const shotDrop   = document.getElementById("shot-drop");
+const shotPicker = document.getElementById("shot-picker");
+
+["dragenter", "dragover"].forEach(function (name) {
+  shotDrop.addEventListener(name, function (e) {
+    e.preventDefault(); e.stopPropagation();
+    shotDrop.classList.add("hot");
+  });
+});
+
+["dragleave", "drop"].forEach(function (name) {
+  shotDrop.addEventListener(name, function (e) {
+    e.preventDefault(); e.stopPropagation();
+    shotDrop.classList.remove("hot");
+  });
+});
+
+shotDrop.addEventListener("drop", function (e) {
+  const files = e.dataTransfer.files;
+  if (files && files.length) sendShots(files);
+});
+
+/* 화면 바깥에 떨어뜨렸을 때도 브라우저가 파일을 열지 않도록 */
+["dragover", "drop"].forEach(function (name) {
+  window.addEventListener(name, function (e) {
+    if (!shotDrop.contains(e.target)) e.preventDefault();
+  });
+});
+
+shotDrop.addEventListener("click", function () { if (!state.busy) shotPicker.click(); });
+document.getElementById("shot-pick-btn").addEventListener("click", function () {
+  if (!state.busy) shotPicker.click();
+});
+
+shotPicker.addEventListener("change", function () {
+  if (shotPicker.files && shotPicker.files.length) sendShots(shotPicker.files);
+  shotPicker.value = "";   /* 같은 파일을 다시 골라도 change 가 걸리도록 */
+});
+
+/* ==========================================================
+   7-2. 사진 확인/수정 화면
+   ========================================================== */
+
+document.getElementById("confirm-go").addEventListener("click", function () {
+  sendDraft();
 });
 
 /* ==========================================================
